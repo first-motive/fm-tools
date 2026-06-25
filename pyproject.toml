@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fm-tools"
+version = "0.1.0"
+description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "First Motive", email = "nish@ubundi.co.za" }]
+# Pure-Python, no rclpy: any First Motive repo can pip install this from a git
+# tag without a ROS environment on the path.
+dependencies = ["textual>=0.74", "rich"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fm_tools"]
+
+[tool.pytest.ini_options]
+# pick() is a Textual app; its tests drive the async pilot harness.
+asyncio_mode = "auto"

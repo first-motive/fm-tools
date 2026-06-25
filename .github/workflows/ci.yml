@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "LICENSE", "NOTICE", ".gitignore"]
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE", "NOTICE", ".gitignore"]
+
+# Pure-Python wheel: no ROS, no colcon. uv runs lint + the pytest suite, and a
+# guard asserts the package imports with no rclpy on the path.
+jobs:
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Assert ROS-free import
+        run: uv run python -c "import fm_tools.tui; import sys; assert 'rclpy' not in sys.modules"
