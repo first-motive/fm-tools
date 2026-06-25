@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+# Table form (not the SPDX string): the SPDX expression triggers hatchling's
+# metadata 2.4 path, which needs packaging>=24.2 (packaging.licenses) — absent in
+# the ros:humble build env. The table form stays installable by old pip.
+license = { text = "Apache-2.0" }
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 authors = [{ name = "First Motive", email = "nish@ubundi.co.za" }]
 # Pure-Python, no rclpy: any First Motive repo can pip install this from a git
 # tag without a ROS environment on the path.
