@@ -20,10 +20,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --extra dev ruff check .
 
       - name: Test
-        run: uv run pytest
+        run: uv run --extra dev pytest
 
       - name: Assert ROS-free import
         run: uv run python -c "import fm_tools.tui; import sys; assert 'rclpy' not in sys.modules"
