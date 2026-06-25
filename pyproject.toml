@@ -14,6 +14,11 @@ authors = [{ name = "First Motive", email = "nish@ubundi.co.za" }]
 # tag without a ROS environment on the path.
 dependencies = ["textual>=0.74", "rich"]
 
+# fm-pick: a shell script reads the chosen option from stdout —
+# `backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)`.
+[project.scripts]
+fm-pick = "fm_tools.tui.pick:main"
+
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
 
