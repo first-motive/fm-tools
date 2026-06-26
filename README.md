@@ -18,7 +18,7 @@ cleanly anywhere Python runs.
 Distribution is git tag-pinned (PyPI-ready, not yet published):
 
 ```bash
-uv pip install "fm-tools @ git+https://github.com/first-motive/fm-tools@v0.1.0"
+uv pip install "fm-tools @ git+https://github.com/first-motive/fm-tools@v0.2.0"
 ```
 
 ## Usage

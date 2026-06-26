@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fm-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
 readme = "README.md"
 requires-python = ">=3.10"
