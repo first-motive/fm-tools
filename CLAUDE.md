@@ -22,7 +22,23 @@ git tag without a ROS environment.
 uv run pytest
 ```
 
+## The `fm` CLI
+
+`fm` is a read-only, cross-repo dispatcher over the First Motive repos. Three
+verbs, each with `--json` for agents and CI:
+
+- `fm list` — every registered `fm-*` repo (name, URL, entry points)
+- `fm status` — per-repo git state; repos not on disk report `not cloned`
+- `fm doctor` — declared health checks; exits non-zero on failure, so it fits CI
+
+`fm` and `fm-pick` are console entry points in the wheel. `./install.sh` puts
+them on `PATH` via `uv tool install` (fm-tools is a tool-installer, not just a
+library). The CLI reports state only — it never clones or runs a repo's
+bootstrap.
+
 ## Layout
 
 - `src/fm_tools/tui/` — palette, banner, widgets, theme, and the `pick` menu
+- `src/fm_tools/cli/` — the `fm` dispatcher, repo registry, and read verbs
+- `install.sh`, `scripts/` — tool-installer front door and its `uv tool` verb
 - `tests/` — pytest suite (the picker drives Textual's async pilot)

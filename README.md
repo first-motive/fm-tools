@@ -65,6 +65,29 @@ fm doctor               # exits non-zero if a check fails
 parent of the directory `fm` runs in — so running it from inside one repo finds
 its siblings.
 
+### Install the CLI
+
+`uv pip install` above imports the wheel; it does not put `fm` on your `PATH`. To
+install the CLI system-wide for a developer, run the installer from a clone:
+
+```bash
+git clone https://github.com/first-motive/fm-tools
+cd fm-tools && ./install.sh          # uv tool install; fm + fm-pick onto PATH
+```
+
+`./install.sh` installs a pinned release tag as an isolated `uv` tool. Other
+subcommands:
+
+```bash
+./install.sh status                  # is fm installed and on PATH?
+./install.sh install --dry-run       # print the resolved install spec, install nothing
+./install.sh uninstall               # remove the fm CLI
+```
+
+If `fm` is not found after install, run `uv tool update-shell` once, then restart
+your shell. Override the release with `FM_TOOLS_REF` (git tag) or `FM_TOOLS_REPO`
+(owner/repo); the default tag tracks this wheel's version.
+
 ### Boundary: delegate, never duplicate
 
 The CLI owns cross-repo verbs only. Each repo keeps its own bootstrap front door
