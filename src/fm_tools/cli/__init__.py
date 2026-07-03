@@ -58,6 +58,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return run_status(json_out=args.json)
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """``fm doctor`` — declared health checks (lazy import)."""
+    from .doctor import run_doctor
+
+    return run_doctor(json_out=args.json)
+
+
 def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
     """Register a read verb with the shared ``--json`` flag."""
     verb = sub.add_parser(name, help=help_text)
@@ -77,6 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="verb", required=True)
     _add_read_verb(sub, "list", "list every registered fm-* repo", _cmd_list)
     _add_read_verb(sub, "status", "cross-repo git state for cloned repos", _cmd_status)
+    _add_read_verb(sub, "doctor", "run each repo's declared health checks", _cmd_doctor)
     return parser
 
 
