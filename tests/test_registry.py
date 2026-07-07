@@ -56,3 +56,9 @@ def test_unknown_check_kind_is_rejected():
 def test_repo_is_frozen():
     with pytest.raises(Exception):
         REPOS[0].name = "mutated"  # type: ignore[misc]
+
+
+def test_only_fm_ros2_declares_an_update_script():
+    scripts = {repo.name: repo.update_script for repo in REPOS}
+    assert scripts["fm-ros2"] == "scripts/update.sh"
+    assert all(script == "" for name, script in scripts.items() if name != "fm-ros2")

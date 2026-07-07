@@ -9,3 +9,4 @@ build/
 
 # Planning artifacts (working files, not committed history)
 plans/
+.DS_Store

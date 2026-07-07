@@ -38,14 +38,42 @@ def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
     return {"repo": repo.name, "check": check.label, "kind": check.kind, "ok": ok}
 
 
+def _sync_rows(base: Path) -> list[dict]:
+    """One synthesized "up to date with origin" row per cloned repo.
+
+    Reuses ``fm status`` (which fetches) so doctor and status agree on behind
+    counts. Passes when the branch is not behind (``behind == 0``) or has no
+    upstream (``behind is None``); fails only when the clone is strictly behind.
+    Not a registry check kind — it is derived state, kept out of ``CHECK_KINDS``.
+    """
+    from .status import gather_status
+
+    rows = []
+    for status in gather_status(base=base, fetch=True):
+        if not status["cloned"]:
+            continue
+        rows.append(
+            {
+                "repo": status["name"],
+                "check": "up to date with origin",
+                "kind": "sync",
+                "ok": status["behind"] in (0, None),
+            }
+        )
+    return rows
+
+
 def gather_checks(base: Path | None = None) -> list[dict]:
     """Run every declared check for every repo under ``base``.
 
     ``base`` defaults to the workspace root — the parent of the current working
-    directory — matching how ``fm status`` resolves clones.
+    directory — matching how ``fm status`` resolves clones. Registry clone/tool
+    checks come first, then one synthesized behind-origin sync row per clone.
     """
     root = base if base is not None else Path.cwd().parent
-    return [_run_check(check, repo, root) for repo in REPOS for check in repo.checks]
+    rows = [_run_check(check, repo, root) for repo in REPOS for check in repo.checks]
+    rows.extend(_sync_rows(root))
+    return rows
 
 
 def _render_table(rows: list[dict]) -> None:

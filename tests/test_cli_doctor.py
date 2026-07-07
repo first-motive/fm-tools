@@ -1,6 +1,7 @@
-"""fm doctor tests — pass and fail paths for clone and tool checks."""
+"""fm doctor tests — pass and fail paths for clone, tool, and sync checks."""
 
 import json
+import subprocess
 
 from fm_tools.cli import doctor, main
 from fm_tools.cli.doctor import gather_checks, run_doctor
@@ -11,6 +12,15 @@ def _clone_all(base):
     """Materialise every registered repo as a git clone under ``base``."""
     for repo in REPOS:
         (base / repo.local_dir / ".git").mkdir(parents=True)
+
+
+def _git(path, *args):
+    subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_clone_check_passes_when_repo_present(tmp_path):
@@ -73,3 +83,35 @@ def test_doctor_verb_dispatches_via_main(capsys):
 def test_doctor_json_verb_dispatches_via_main(capsys):
     main(["doctor", "--json"])
     assert isinstance(json.loads(capsys.readouterr().out), list)
+
+
+def test_behind_clone_yields_a_failing_sync_row(tmp_path):
+    # Origin advances a commit past the clone, so the clone is behind by one.
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    _git(origin, "config", "user.email", "t@e.com")
+    _git(origin, "config", "user.name", "t")
+    (origin / "a.txt").write_text("one")
+    _git(origin, "add", "a.txt")
+    _git(origin, "commit", "-m", "one")
+
+    repo = tmp_path / "fm-tools"
+    _git(tmp_path, "clone", str(origin), str(repo))
+
+    (origin / "b.txt").write_text("two")
+    _git(origin, "add", "b.txt")
+    _git(origin, "commit", "-m", "two")
+
+    sync = [
+        row
+        for row in gather_checks(base=tmp_path)
+        if row["kind"] == "sync" and row["repo"] == "fm-tools"
+    ]
+    assert len(sync) == 1
+    assert sync[0]["ok"] is False
+
+
+def test_sync_row_absent_for_uncloned_repo(tmp_path):
+    sync = [row for row in gather_checks(base=tmp_path) if row["kind"] == "sync"]
+    assert sync == []

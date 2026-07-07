@@ -65,6 +65,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return run_doctor(json_out=args.json)
 
 
+def _cmd_update(args: argparse.Namespace) -> int:
+    """``fm update`` — pull + delegate per cloned repo (lazy import)."""
+    from .update import run_update
+
+    return run_update(json_out=args.json, stable=args.stable)
+
+
 def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
     """Register a read verb with the shared ``--json`` flag."""
     verb = sub.add_parser(name, help=help_text)
@@ -85,6 +92,21 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_read_verb(sub, "list", "list every registered fm-* repo", _cmd_list)
     _add_read_verb(sub, "status", "cross-repo git state for cloned repos", _cmd_status)
     _add_read_verb(sub, "doctor", "run each repo's declared health checks", _cmd_doctor)
+
+    # update writes (pulls), so it gets its own block: --json plus a --stable
+    # channel flag on top of the shared read-verb surface.
+    update = sub.add_parser("update", help="pull and delegate an update per cloned repo")
+    update.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON instead of a table",
+    )
+    update.add_argument(
+        "--stable",
+        action="store_true",
+        help="track the stable channel (not yet cut)",
+    )
+    update.set_defaults(func=_cmd_update)
     return parser
 
 
