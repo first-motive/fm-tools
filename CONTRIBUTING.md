@@ -68,3 +68,8 @@ uv run pytest
 ```
 
 For other stacks, see the project README for the test command.
+
+## Onboarding
+
+New here? The [First Motive org profile](https://github.com/first-motive#get-started)
+has the one-curl setup and the `fm update` sync habit.

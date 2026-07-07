@@ -49,6 +49,10 @@ class Repo:
     ``local_dir`` is a directory-name hint resolved relative to the workspace
     root (the parent of wherever ``fm`` runs); the CLI never clones, it only
     reads state from a clone that is already present.
+
+    ``update_script`` names a repo-owned update entry point (path relative to the
+    checkout, e.g. ``scripts/update.sh``) that ``fm update`` delegates to after a
+    clean pull. Empty means the repo updates by plain pull with no delegate.
     """
 
     name: str
@@ -56,11 +60,17 @@ class Repo:
     local_dir: str
     entry_points: tuple[str, ...]
     checks: tuple[HealthCheck, ...] = ()
+    update_script: str = ""
 
 
 # Every repo shares the git-on-PATH tool check (status and doctor both shell out
 # to git) plus a clone-present check; repo-specific tool checks come after.
-def _repo(name: str, entry_points: tuple[str, ...], tools: tuple[str, ...] = ()) -> Repo:
+def _repo(
+    name: str,
+    entry_points: tuple[str, ...],
+    tools: tuple[str, ...] = (),
+    update_script: str = "",
+) -> Repo:
     checks = (
         HealthCheck("clone", f"{name} cloned"),
         HealthCheck("tool", "git on PATH", "git"),
@@ -72,6 +82,7 @@ def _repo(name: str, entry_points: tuple[str, ...], tools: tuple[str, ...] = ())
         local_dir=name,
         entry_points=entry_points,
         checks=checks,
+        update_script=update_script,
     )
 
 
@@ -81,7 +92,12 @@ def _repo(name: str, entry_points: tuple[str, ...], tools: tuple[str, ...] = ())
 REPOS: tuple[Repo, ...] = (
     _repo("fm-ai", entry_points=("install.sh",)),
     _repo("fm-docker", entry_points=("install.sh", "run.sh"), tools=("docker",)),
-    _repo("fm-ros2", entry_points=("install.sh", "run.sh"), tools=("colcon",)),
+    _repo(
+        "fm-ros2",
+        entry_points=("install.sh", "run.sh"),
+        tools=("colcon",),
+        update_script="scripts/update.sh",
+    ),
     _repo("fm-desktop", entry_points=("run.sh",)),
     _repo("fm-tools", entry_points=("install.sh",)),
 )

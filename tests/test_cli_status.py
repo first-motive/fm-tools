@@ -41,7 +41,7 @@ def _row(rows, name):
 
 
 def test_cloned_repo_reports_branch_and_clean(workspace):
-    rows = gather_status(base=workspace)
+    rows = gather_status(base=workspace, fetch=False)
     fm_tools = _row(rows, "fm-tools")
     assert fm_tools["cloned"] is True
     assert fm_tools["branch"] == "main"
@@ -49,26 +49,26 @@ def test_cloned_repo_reports_branch_and_clean(workspace):
 
 
 def test_absent_repo_reported_not_cloned(workspace):
-    fm_ai = _row(gather_status(base=workspace), "fm-ai")
+    fm_ai = _row(gather_status(base=workspace, fetch=False), "fm-ai")
     assert fm_ai["cloned"] is False
     assert fm_ai["branch"] is None
 
 
 def test_uncommitted_change_shows_dirty(workspace):
     (workspace / "fm-tools" / "scratch.txt").write_text("wip")
-    fm_tools = _row(gather_status(base=workspace), "fm-tools")
+    fm_tools = _row(gather_status(base=workspace, fetch=False), "fm-tools")
     assert fm_tools["dirty"] is True
 
 
 def test_no_upstream_leaves_ahead_behind_null(workspace):
     # A fresh init has no upstream, so the counts stay null (not 0/0).
-    fm_tools = _row(gather_status(base=workspace), "fm-tools")
+    fm_tools = _row(gather_status(base=workspace, fetch=False), "fm-tools")
     assert fm_tools["ahead"] is None
     assert fm_tools["behind"] is None
 
 
 def test_run_status_json_is_valid_and_exits_zero(workspace, capsys):
-    assert run_status(json_out=True, base=workspace) == 0
+    assert run_status(json_out=True, base=workspace, fetch=False) == 0
     payload = json.loads(capsys.readouterr().out)
     assert {row["name"] for row in payload} == {
         "fm-ai",
@@ -80,7 +80,7 @@ def test_run_status_json_is_valid_and_exits_zero(workspace, capsys):
 
 
 def test_run_status_table_exits_zero(workspace, capsys):
-    assert run_status(json_out=False, base=workspace) == 0
+    assert run_status(json_out=False, base=workspace, fetch=False) == 0
     assert "fm-tools" in capsys.readouterr().out
 
 

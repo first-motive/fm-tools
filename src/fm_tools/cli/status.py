@@ -35,11 +35,14 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _repo_status(repo: Repo, base: Path) -> dict:
+def _repo_status(repo: Repo, base: Path, fetch: bool = True) -> dict:
     """Read one repo's git state, or mark it not-cloned.
 
     ``ahead``/``behind`` stay ``None`` when the branch has no upstream, so an
     agent can tell "in sync" (0/0) apart from "no upstream to compare" (null).
+    When ``fetch`` is set, a best-effort ``git fetch`` refreshes the upstream ref
+    first so the counts reflect the remote; its failure (offline, no remote) is
+    ignored — the returncode guards below still null out the counts.
     """
     path = base / repo.local_dir
     if not (path / ".git").is_dir():
@@ -51,6 +54,9 @@ def _repo_status(repo: Repo, base: Path) -> dict:
             "ahead": None,
             "behind": None,
         }
+
+    if fetch:
+        _git(path, "fetch", "--quiet")
 
     branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     dirty = bool(_git(path, "status", "--porcelain").stdout.strip())
@@ -72,14 +78,16 @@ def _repo_status(repo: Repo, base: Path) -> dict:
     }
 
 
-def gather_status(base: Path | None = None) -> list[dict]:
+def gather_status(base: Path | None = None, fetch: bool = True) -> list[dict]:
     """Collect git state for every registered repo under ``base``.
 
     ``base`` defaults to the workspace root — the parent of the current working
     directory — so running ``fm`` from inside one repo finds its siblings.
+    ``fetch`` (default on) refreshes each upstream first; tests pass ``False`` to
+    stay network-free.
     """
     root = base if base is not None else Path.cwd().parent
-    return [_repo_status(repo, root) for repo in REPOS]
+    return [_repo_status(repo, root, fetch=fetch) for repo in REPOS]
 
 
 def _render_table(rows: list[dict]) -> None:
@@ -102,9 +110,9 @@ def _render_table(rows: list[dict]) -> None:
     Console().print(table)
 
 
-def run_status(json_out: bool = False, base: Path | None = None) -> int:
+def run_status(json_out: bool = False, base: Path | None = None, fetch: bool = True) -> int:
     """``fm status`` handler. Always exits 0 — reporting state is not a failure."""
-    rows = gather_status(base)
+    rows = gather_status(base, fetch=fetch)
     if json_out:
         print(jsonlib.dumps(rows, indent=2))
     else:
