@@ -32,7 +32,11 @@ from .registry import REPOS
 
 # Verb names the CLI owns. A repo manifest that claims one of these is reported
 # as a collision and left unmounted — built-ins are never shadowed.
-BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update"})
+#
+# The forwarding verbs (install, setup) are parsed by hand for the same reason
+# manifest verbs are: everything after the verb belongs to a repo's own script.
+FORWARDING_VERBS = frozenset({"install"})
+BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update"}) | FORWARDING_VERBS
 
 
 def _list_payload() -> list[dict]:
@@ -96,19 +100,21 @@ def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
 
 
 def _manifest_epilog(commands: dict) -> str:
-    """Render discovered manifest verbs for ``fm --help``.
+    """Render the hand-parsed verbs for ``fm --help``.
 
-    Built-in help comes from argparse; manifest verbs are not argparse
-    subcommands (they are matched before parsing), so they are listed here —
-    otherwise ``fm --help`` would hide half the surface.
+    Built-in help comes from argparse; the forwarding verbs and the manifest
+    verbs are matched before parsing, so they are listed here — otherwise
+    ``fm --help`` would hide half the surface.
     """
-    if not commands:
-        return ""
-    lines = [
-        f"  {name:<12} {command.help or command.script.name} ({command.repo})"
-        for name, command in sorted(commands.items())
-    ]
-    return "repo commands (declared in each repo's fm.json):\n" + "\n".join(lines)
+    sections = ["forwarding verbs (args go straight to a repo's script):"]
+    sections.append("  install <repo> [args...]   run that repo's install.sh")
+    if commands:
+        sections.append("\nrepo commands (declared in each repo's fm.json):")
+        sections.extend(
+            f"  {name:<12} {command.help or command.script.name} ({command.repo})"
+            for name, command in sorted(commands.items())
+        )
+    return "\n".join(sections)
 
 
 def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
@@ -152,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
 
     argv = sys.argv[1:] if argv is None else argv
     root = resolve_root()
+
+    if argv and argv[0] == "install":
+        from .install import run_install
+
+        return run_install(argv[1:], root)
+
     discovery = discover(root, reserved=BUILTIN_VERBS)
 
     if argv and argv[0] not in BUILTIN_VERBS and not argv[0].startswith("-"):
