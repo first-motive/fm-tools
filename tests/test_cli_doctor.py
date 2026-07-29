@@ -70,7 +70,8 @@ def test_run_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload
     for row in payload:
-        assert set(row) == {"repo", "check", "kind", "ok"}
+        assert set(row) == {"repo", "check", "kind", "level", "ok"}
+        assert row["level"] in {"pass", "fail", "warn"}
 
 
 def test_doctor_verb_dispatches_via_main(capsys):
@@ -115,3 +116,88 @@ def test_behind_clone_yields_a_failing_sync_row(tmp_path):
 def test_sync_row_absent_for_uncloned_repo(tmp_path):
     sync = [row for row in gather_checks(base=tmp_path) if row["kind"] == "sync"]
     assert sync == []
+
+
+FM_ROS2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
+
+
+def _manifest(base, commands, version=1):
+    """Give fm_ros2 a manifest under ``base`` and return its checkout."""
+    checkout = base / FM_ROS2.local_dir
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "fm.json").write_text(json.dumps({"version": version, "commands": commands}))
+    return checkout
+
+
+def _script(checkout, rel_path, executable=True):
+    path = checkout / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    if executable:
+        path.chmod(0o755)
+    return path
+
+
+def _rows(base, kind):
+    return [row for row in gather_checks(base=base) if row["kind"] == kind]
+
+
+def test_healthy_manifest_yields_a_passing_row(tmp_path):
+    checkout = _manifest(tmp_path, {"teleop": {"script": "scripts/run/teleop.sh"}})
+    _script(checkout, "scripts/run/teleop.sh")
+
+    manifest = _rows(tmp_path, "manifest")
+    assert len(manifest) == 1
+    assert manifest[0]["level"] == "pass"
+    assert "teleop" in manifest[0]["check"]
+
+
+def test_repo_without_a_manifest_gets_no_row(tmp_path):
+    assert _rows(tmp_path, "manifest") == []
+
+
+def test_missing_declared_script_fails_doctor(tmp_path):
+    _manifest(tmp_path, {"teleop": {"script": "scripts/run/teleop.sh"}})
+
+    manifest = _rows(tmp_path, "manifest")
+    assert any(row["level"] == "fail" for row in manifest)
+    assert run_doctor(json_out=True, base=tmp_path) == 1
+
+
+def test_non_executable_declared_script_fails_doctor(tmp_path):
+    checkout = _manifest(tmp_path, {"teleop": {"script": "scripts/run/teleop.sh"}})
+    _script(checkout, "scripts/run/teleop.sh", executable=False)
+
+    assert any(row["level"] == "fail" for row in _rows(tmp_path, "manifest"))
+
+
+def test_unparseable_manifest_fails_doctor(tmp_path):
+    checkout = tmp_path / FM_ROS2.local_dir
+    checkout.mkdir(parents=True)
+    (checkout / "fm.json").write_text("{ not json")
+
+    manifest = _rows(tmp_path, "manifest")
+    assert [row["level"] for row in manifest] == ["fail"]
+
+
+def test_undeclared_run_script_only_warns(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    _clone_all(tmp_path)
+    checkout = _manifest(tmp_path, {"teleop": {"script": "scripts/run/teleop.sh"}})
+    _script(checkout, "scripts/run/teleop.sh")
+    _script(checkout, "scripts/run/sim.sh")
+
+    undeclared = _rows(tmp_path, "undeclared")
+    assert len(undeclared) == 1
+    assert undeclared[0]["level"] == "warn"
+    assert "sim.sh" in undeclared[0]["check"]
+    assert "teleop.sh" not in undeclared[0]["check"]
+    # A warning is a nudge, not a gate: the run still exits clean.
+    assert run_doctor(json_out=True, base=tmp_path) == 0
+
+
+def test_helper_scripts_are_not_flagged(tmp_path):
+    checkout = _manifest(tmp_path, {})
+    _script(checkout, "scripts/run/lib-buildtree.sh")
+
+    assert _rows(tmp_path, "undeclared") == []

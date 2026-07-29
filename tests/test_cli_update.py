@@ -89,7 +89,6 @@ def test_run_update_json_is_valid(workspace, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert {row["name"] for row in payload} == {
         "fm-ai",
-        "fm-docker",
         "fm-ros2",
         "fm-desktop",
         "fm-tools",
@@ -142,7 +141,7 @@ def _clone_fm_ros2(tmp_path, script_body):
     _git(origin, "add", "scripts/update.sh")
     _git(origin, "commit", "-m", "add update script")
 
-    repo = tmp_path / "fm-ros2"
+    repo = tmp_path / "fm_ros2"  # the checkout is underscored; the repo name is not
     _git(tmp_path, "clone", str(origin), str(repo))
     return repo
 
@@ -171,7 +170,7 @@ def test_escaping_update_script_is_not_executed(tmp_path, monkeypatch):
     (origin / "README.md").write_text("hi")
     _git(origin, "add", "README.md")
     _git(origin, "commit", "-m", "init")
-    _git(tmp_path, "clone", str(origin), str(tmp_path / "fm-ros2"))
+    _git(tmp_path, "clone", str(origin), str(tmp_path / "fm_ros2"))
 
     # Plant an executable script one level above the checkout, then point the
     # fm-ros2 registry entry at it via "../". The guard must refuse to run it.

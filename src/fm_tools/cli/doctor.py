@@ -1,13 +1,23 @@
 """fm doctor — run each repo's declared health checks and report pass/fail.
 
-Two check kinds, both read-only (see :mod:`fm_tools.cli.registry`):
+Registry check kinds, both read-only (see :mod:`fm_tools.cli.registry`):
 
 - ``clone`` — the repo's ``local_dir`` is present as a git clone under the
   workspace root
 - ``tool``  — the named binary resolves on ``PATH``
 
-``doctor`` exits non-zero when any check fails, so it drops into CI and pre-flight
-scripts as a gate. ``--json`` gives an agent the same pass/fail rows.
+Three derived kinds are synthesized on top:
+
+- ``sync``       — the clone is not behind its origin
+- ``manifest``   — the repo's ``fm.json`` parses, and every verb it declares
+  points at a script that exists, is executable, and is not claimed twice
+- ``undeclared`` — a heuristic: workflow scripts sitting in ``scripts/run/`` that
+  the manifest never declares, so the CLI cannot reach them
+
+Every row carries a ``level``: ``pass``, ``fail``, or ``warn``. Only ``fail``
+moves the exit code, so ``doctor`` still drops into CI as a gate while the
+undeclared-script heuristic nudges without breaking a build over a judgement call.
+``--json`` gives an agent the same rows.
 """
 
 from __future__ import annotations
@@ -20,6 +30,12 @@ from rich.console import Console
 from rich.table import Table
 
 from .registry import REPOS, HealthCheck, Repo
+from .workspace import resolve_root
+
+
+def _row(repo: str, check: str, kind: str, level: str) -> dict:
+    """One report row. ``ok`` stays in the payload so old readers keep working."""
+    return {"repo": repo, "check": check, "kind": kind, "level": level, "ok": level != "fail"}
 
 
 def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
@@ -27,7 +43,7 @@ def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
 
     ``clone`` tests the filesystem; ``tool`` tests ``PATH``. An unknown kind is
     impossible — the registry validates kinds at construction — but it fails
-    closed (``ok=False``) rather than raising mid-report.
+    closed rather than raising mid-report.
     """
     if check.kind == "clone":
         ok = (base / repo.local_dir / ".git").is_dir()
@@ -35,7 +51,7 @@ def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
         ok = shutil.which(check.target) is not None
     else:  # pragma: no cover - registry rejects unknown kinds at construction
         ok = False
-    return {"repo": repo.name, "check": check.label, "kind": check.kind, "ok": ok}
+    return _row(repo.name, check.label, check.kind, "pass" if ok else "fail")
 
 
 def _sync_rows(base: Path) -> list[dict]:
@@ -52,47 +68,119 @@ def _sync_rows(base: Path) -> list[dict]:
     for status in gather_status(base=base, fetch=True):
         if not status["cloned"]:
             continue
+        ok = status["behind"] in (0, None)
         rows.append(
-            {
-                "repo": status["name"],
-                "check": "up to date with origin",
-                "kind": "sync",
-                "ok": status["behind"] in (0, None),
-            }
+            _row(status["name"], "up to date with origin", "sync", "pass" if ok else "fail")
         )
+    return rows
+
+
+def _manifest_rows(base: Path) -> list[dict]:
+    """One row per repo declaring commands, plus one row per manifest problem.
+
+    A repo with no ``fm.json`` gets no row: not every repo has workflows worth
+    mounting, and inventing a failing check for that would make ``doctor`` red on
+    a healthy machine. Problems (unparseable manifest, missing or non-executable
+    script, verb claimed twice) fail — each one means a declared verb the CLI
+    cannot honour.
+    """
+    from . import BUILTIN_VERBS
+    from .manifest import discover
+
+    discovery = discover(base, reserved=BUILTIN_VERBS)
+    rows = [
+        _row(problem.repo, f"{problem.kind}: {problem.detail}", "manifest", "fail")
+        for problem in discovery.problems
+    ]
+
+    declaring = {command.repo for command in discovery.commands.values()}
+    for repo_name in sorted(declaring):
+        verbs = sorted(
+            name for name, command in discovery.commands.items() if command.repo == repo_name
+        )
+        rows.append(
+            _row(repo_name, f"fm.json declares {', '.join(verbs)}", "manifest", "pass")
+        )
+    return rows
+
+
+def _undeclared_rows(base: Path) -> list[dict]:
+    """Warn where ``scripts/run/*.sh`` exists but the manifest never declares it.
+
+    The heuristic exists so a new workflow script is noticed rather than silently
+    unreachable from ``fm``. It is deliberately a warning, not a failure: plenty
+    of scripts under ``scripts/run/`` are boot or helper scripts that nobody
+    should type, and doctor has no way to tell which is which.
+    """
+    from .manifest import load_manifest
+
+    rows = []
+    for repo in REPOS:
+        checkout = base / repo.local_dir
+        run_dir = checkout / "scripts" / "run"
+        if not run_dir.is_dir():
+            continue
+        declared = {command.script for command in load_manifest(repo, base)[0]}
+        undeclared = sorted(
+            script.name
+            for script in run_dir.glob("*.sh")
+            if script.resolve() not in declared and not script.name.startswith("lib-")
+        )
+        if undeclared:
+            rows.append(
+                _row(
+                    repo.name,
+                    f"not declared in fm.json: {', '.join(undeclared)}",
+                    "undeclared",
+                    "warn",
+                )
+            )
     return rows
 
 
 def gather_checks(base: Path | None = None) -> list[dict]:
     """Run every declared check for every repo under ``base``.
 
-    ``base`` defaults to the workspace root — the parent of the current working
-    directory — matching how ``fm status`` resolves clones. Registry clone/tool
-    checks come first, then one synthesized behind-origin sync row per clone.
+    ``base`` defaults to the resolved workspace root, matching how ``fm status``
+    resolves clones. Registry clone/tool checks come first, then the synthesized
+    sync, manifest, and undeclared-script rows.
     """
-    root = base if base is not None else Path.cwd().parent
+    root = base if base is not None else resolve_root()
     rows = [_run_check(check, repo, root) for repo in REPOS for check in repo.checks]
     rows.extend(_sync_rows(root))
+    rows.extend(_manifest_rows(root))
+    rows.extend(_undeclared_rows(root))
     return rows
 
 
-def _render_table(rows: list[dict]) -> None:
-    """Render doctor check rows as a rich table."""
+# How each level renders in the table.
+_RESULT_STYLE = {"pass": "[green]pass[/green]", "warn": "[yellow]warn[/yellow]"}
+
+
+def render_checks(rows: list[dict]) -> None:
+    """Render doctor check rows as a rich table.
+
+    Public because ``fm setup`` finishes by showing the same verdict, and both
+    must render it identically.
+    """
     table = Table(title="fm doctor")
     table.add_column("repo", style="bold")
     table.add_column("check")
     table.add_column("result")
     for row in rows:
-        result = "[green]pass[/green]" if row["ok"] else "[red]fail[/red]"
-        table.add_row(row["repo"], row["check"], result)
+        table.add_row(row["repo"], row["check"], _RESULT_STYLE.get(row["level"], "[red]fail[/red]"))
     Console().print(table)
 
 
 def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
-    """``fm doctor`` handler. Exits non-zero when any check fails."""
+    """``fm doctor`` handler. Exits non-zero when any check fails.
+
+    Warnings never move the exit code — a repo with an undeclared workflow script
+    is worth flagging, not worth failing a build over.
+    """
     rows = gather_checks(base)
     if json_out:
         print(jsonlib.dumps(rows, indent=2))
     else:
-        _render_table(rows)
-    return 1 if any(not row["ok"] for row in rows) else 0
+        render_checks(rows)
+    return 1 if any(row["level"] == "fail" for row in rows) else 0

@@ -72,7 +72,6 @@ def test_run_status_json_is_valid_and_exits_zero(workspace, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert {row["name"] for row in payload} == {
         "fm-ai",
-        "fm-docker",
         "fm-ros2",
         "fm-desktop",
         "fm-tools",

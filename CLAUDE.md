@@ -24,17 +24,44 @@ uv run pytest
 
 ## The `fm` CLI
 
-`fm` is a read-only, cross-repo dispatcher over the First Motive repos. Three
-verbs, each with `--json` for agents and CI:
+`fm` is a cross-repo dispatcher over the First Motive repos. Reporting verbs,
+each with `--json` for agents and CI:
 
 - `fm list` — every registered `fm-*` repo (name, URL, entry points)
 - `fm status` — per-repo git state; repos not on disk report `not cloned`
-- `fm doctor` — declared health checks; exits non-zero on failure, so it fits CI
+- `fm doctor` — health checks, including manifest validity; exits non-zero on
+  failure, so it fits CI
+
+Verbs that act, each by delegating to a repo's own script:
+
+- `fm update` — fast-forward every clean clone, then run its update script
+- `fm install <repo> [args…]` — run that repo's `install.sh`, args forwarded
+- `fm setup [--dry-run]` — clone what is missing, adopt what exists, install,
+  then print doctor's verdict
+- anything a repo declares in its `fm.json` (see the contract below)
+
+Repos are resolved under one workspace root: `FM_HOME`, else
+`~/.config/fm/config.json`, else detection, else `~`.
 
 `fm` and `fm-pick` are console entry points in the wheel. `./install.sh` puts
 them on `PATH` via `uv tool install` (fm-tools is a tool-installer, not just a
-library). The CLI reports state only — it never clones or runs a repo's
-bootstrap.
+library). The CLI never reimplements a repo's bootstrap — it delegates.
+
+## fm CLI Contract
+
+`fm` mounts a repo's workflows as top-level verbs by reading `fm.json` at that
+repo's root. A new user-facing workflow script must be declared there, or it
+stays unreachable from `fm`. The rule binds every First Motive repo, including
+this one.
+
+- Declare it: add `"<verb>": {"script": "<path/to/script.sh>", "help": "<one line>"}`
+  under `commands` in the repo's `fm.json`.
+- Verify it: `fm doctor` fails on a declared script that is missing or not
+  executable, and warns on a run script that no manifest declares.
+
+Arguments are forwarded to the script verbatim — the CLI parses none of them, so
+the script stays the single source of truth for its own flags. See the `fm-cli`
+skill for the manifest schema and the full verb surface.
 
 ## Layout
 
