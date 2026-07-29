@@ -22,6 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .registry import REPOS, Repo
+from .workspace import resolve_root
 
 
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
@@ -92,8 +93,12 @@ def _update_repo(repo: Repo, base: Path) -> dict:
 
 
 def gather_updates(base: Path | None = None) -> list[dict]:
-    """Pull and delegate for every registered repo under ``base``."""
-    root = base if base is not None else Path.cwd().parent
+    """Pull and delegate for every registered repo under ``base``.
+
+    ``base`` defaults to the resolved workspace root (see
+    :mod:`fm_tools.cli.workspace`).
+    """
+    root = base if base is not None else resolve_root()
     return [_update_repo(repo, root) for repo in REPOS]
 
 

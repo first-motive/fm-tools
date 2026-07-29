@@ -1,9 +1,9 @@
 """fm status — cross-repo git state for the repos found on disk.
 
 For each registered repo the CLI resolves ``local_dir`` under the workspace root
-(the parent of the directory ``fm`` runs in) and, when a clone is present, shells
-out to ``git`` for its branch, clean/dirty flag, and ahead/behind counts against
-the upstream. A repo with no clone is reported as ``not cloned`` — never faked.
+(see :mod:`fm_tools.cli.workspace`) and, when a clone is present, shells out to
+``git`` for its branch, clean/dirty flag, and ahead/behind counts against the
+upstream. A repo with no clone is reported as ``not cloned`` — never faked.
 
 The CLI shells out rather than importing a git library: zero new dependencies,
 and it reads exactly the state a developer would read by hand.
@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .registry import REPOS, Repo
+from .workspace import resolve_root
 
 
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
@@ -81,12 +82,11 @@ def _repo_status(repo: Repo, base: Path, fetch: bool = True) -> dict:
 def gather_status(base: Path | None = None, fetch: bool = True) -> list[dict]:
     """Collect git state for every registered repo under ``base``.
 
-    ``base`` defaults to the workspace root — the parent of the current working
-    directory — so running ``fm`` from inside one repo finds its siblings.
-    ``fetch`` (default on) refreshes each upstream first; tests pass ``False`` to
-    stay network-free.
+    ``base`` defaults to the resolved workspace root (see
+    :func:`fm_tools.cli.workspace.resolve_root`). ``fetch`` (default on)
+    refreshes each upstream first; tests pass ``False`` to stay network-free.
     """
-    root = base if base is not None else Path.cwd().parent
+    root = base if base is not None else resolve_root()
     return [_repo_status(repo, root, fetch=fetch) for repo in REPOS]
 
 

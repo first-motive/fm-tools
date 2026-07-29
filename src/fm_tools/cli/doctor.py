@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .registry import REPOS, HealthCheck, Repo
+from .workspace import resolve_root
 
 
 def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
@@ -66,11 +67,11 @@ def _sync_rows(base: Path) -> list[dict]:
 def gather_checks(base: Path | None = None) -> list[dict]:
     """Run every declared check for every repo under ``base``.
 
-    ``base`` defaults to the workspace root — the parent of the current working
-    directory — matching how ``fm status`` resolves clones. Registry clone/tool
-    checks come first, then one synthesized behind-origin sync row per clone.
+    ``base`` defaults to the resolved workspace root, matching how ``fm status``
+    resolves clones. Registry clone/tool checks come first, then one synthesized
+    behind-origin sync row per clone.
     """
-    root = base if base is not None else Path.cwd().parent
+    root = base if base is not None else resolve_root()
     rows = [_run_check(check, repo, root) for repo in REPOS for check in repo.checks]
     rows.extend(_sync_rows(root))
     return rows
