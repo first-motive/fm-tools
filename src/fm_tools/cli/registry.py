@@ -46,9 +46,10 @@ class HealthCheck:
 class Repo:
     """One First Motive repo the CLI can list, inspect, and health-check.
 
-    ``local_dir`` is a directory-name hint resolved relative to the workspace
-    root (the parent of wherever ``fm`` runs); the CLI never clones, it only
-    reads state from a clone that is already present.
+    ``local_dir`` is the checkout's directory name, resolved relative to the
+    workspace root (see :mod:`fm_tools.cli.workspace`). It defaults to ``name``
+    and diverges only where the on-disk directory does — ``fm-ros2`` clones as
+    ``fm_ros2``.
 
     ``update_script`` names a repo-owned update entry point (path relative to the
     checkout, e.g. ``scripts/update.sh``) that ``fm update`` delegates to after a
@@ -70,6 +71,7 @@ def _repo(
     entry_points: tuple[str, ...],
     tools: tuple[str, ...] = (),
     update_script: str = "",
+    local_dir: str = "",
 ) -> Repo:
     checks = (
         HealthCheck("clone", f"{name} cloned"),
@@ -79,26 +81,32 @@ def _repo(
     return Repo(
         name=name,
         url=f"https://github.com/first-motive/{name}.git",
-        local_dir=name,
+        local_dir=local_dir or name,
         entry_points=entry_points,
         checks=checks,
         update_script=update_script,
     )
 
 
-# The five First Motive repos, in dependency-agnostic listing order. Entry points
-# name each repo's own bootstrap front door (the fm-bootstrap contract); the CLI
-# reports them but never invokes them in v1.
+# The four First Motive repos, in dependency-agnostic listing order. Entry points
+# name each repo's own bootstrap front door (the fm-bootstrap contract), which
+# ``fm install`` and ``fm setup`` delegate to.
+#
+# fm-docker is absent on purpose: it is vendored inside fm_ros2 (``docker/``), not
+# cloned as a sibling, so a registry entry for it always reported "not cloned".
 REPOS: tuple[Repo, ...] = (
     _repo("fm-ai", entry_points=("install.sh",)),
-    _repo("fm-docker", entry_points=("install.sh", "run.sh"), tools=("docker",)),
     _repo(
         "fm-ros2",
         entry_points=("install.sh", "run.sh"),
         tools=("colcon",),
         update_script="scripts/update.sh",
+        # The checkout is fm_ros2 (underscore) — it doubles as the ament package
+        # name, which cannot carry a hyphen. The repo (and its URL) keeps the
+        # hyphen, so name and directory diverge for this repo alone.
+        local_dir="fm_ros2",
     ),
-    _repo("fm-desktop", entry_points=("run.sh",)),
+    _repo("fm-desktop", entry_points=("install.sh", "run.sh")),
     _repo("fm-tools", entry_points=("install.sh",)),
 )
 

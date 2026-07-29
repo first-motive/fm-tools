@@ -10,12 +10,26 @@ from fm_tools.cli.registry import (
     repo_names,
 )
 
-EXPECTED = {"fm-ai", "fm-docker", "fm-ros2", "fm-desktop", "fm-tools"}
+EXPECTED = {"fm-ai", "fm-ros2", "fm-desktop", "fm-tools"}
 
 
-def test_registry_covers_the_five_repos():
+def test_registry_covers_the_four_sibling_repos():
+    # fm-docker is vendored inside fm_ros2, never cloned beside it.
     assert {repo.name for repo in REPOS} == EXPECTED
     assert set(repo_names()) == EXPECTED
+
+
+def test_fm_ros2_clones_into_an_underscore_directory():
+    fm_ros2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
+    assert fm_ros2.local_dir == "fm_ros2"
+
+
+def test_every_other_repo_clones_into_its_own_name():
+    assert all(repo.local_dir == repo.name for repo in REPOS if repo.name != "fm-ros2")
+
+
+def test_every_installable_repo_declares_an_installer():
+    assert all("install.sh" in repo.entry_points for repo in REPOS)
 
 
 def test_repo_names_preserve_listing_order():
