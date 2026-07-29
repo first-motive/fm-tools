@@ -36,7 +36,7 @@ from .registry import REPOS
 # The forwarding verbs (install, setup) are parsed by hand for the same reason
 # manifest verbs are: everything after the verb belongs to a repo's own script.
 FORWARDING_VERBS = frozenset({"install"})
-BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update"}) | FORWARDING_VERBS
+BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update", "setup"}) | FORWARDING_VERBS
 
 
 def _list_payload() -> list[dict]:
@@ -86,6 +86,13 @@ def _cmd_update(args: argparse.Namespace) -> int:
     from .update import run_update
 
     return run_update(json_out=args.json, stable=args.stable)
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """``fm setup`` — clone, install, then prove it with doctor (lazy import)."""
+    from .setup import run_setup
+
+    return run_setup(json_out=args.json, dry_run=args.dry_run)
 
 
 def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
@@ -143,6 +150,21 @@ def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
         help="track the stable channel (not yet cut)",
     )
     update.set_defaults(func=_cmd_update)
+
+    # setup writes too (clones, installs), and takes --dry-run so a developer can
+    # read the plan before it touches anything.
+    setup = sub.add_parser("setup", help="clone, install, and verify the whole workspace")
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON instead of a table",
+    )
+    setup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report the plan without cloning or installing anything",
+    )
+    setup.set_defaults(func=_cmd_setup)
     return parser
 
 

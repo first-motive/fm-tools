@@ -157,8 +157,12 @@ def gather_checks(base: Path | None = None) -> list[dict]:
 _RESULT_STYLE = {"pass": "[green]pass[/green]", "warn": "[yellow]warn[/yellow]"}
 
 
-def _render_table(rows: list[dict]) -> None:
-    """Render doctor check rows as a rich table."""
+def render_checks(rows: list[dict]) -> None:
+    """Render doctor check rows as a rich table.
+
+    Public because ``fm setup`` finishes by showing the same verdict, and both
+    must render it identically.
+    """
     table = Table(title="fm doctor")
     table.add_column("repo", style="bold")
     table.add_column("check")
@@ -178,5 +182,5 @@ def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
     if json_out:
         print(jsonlib.dumps(rows, indent=2))
     else:
-        _render_table(rows)
+        render_checks(rows)
     return 1 if any(row["level"] == "fail" for row in rows) else 0
