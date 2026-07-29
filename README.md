@@ -40,30 +40,70 @@ backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)
 
 ## The `fm` CLI
 
-`fm` is a thin, read-only CLI over every First Motive repo — one discoverable,
+`fm` is a thin CLI over every First Motive repo — one discoverable,
 machine-readable surface for developers and AI agents landing cold. It ships as a
 console entry point with the wheel.
 
-Three verbs, all read-only:
+Reporting verbs, all read-only and all taking `--json`:
 
 | Verb        | Reports                                                        |
 | ----------- | ------------------------------------------------------------- |
 | `fm list`   | Every registered `fm-*` repo: name, git URL, entry points.    |
 | `fm status` | Per-repo git state — branch, clean/dirty, ahead/behind. Repos not on disk are reported as `not cloned`, never faked. |
-| `fm doctor` | Each repo's declared health checks (clone present, tools on `PATH`). Exits non-zero when any check fails, so it drops into CI. |
+| `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid). Exits non-zero when any check fails, so it drops into CI. |
 
-Every verb takes `--json` for agents and CI; the default is a rich table for
-humans:
+Verbs that act, each by handing the work to a repo's own script:
+
+| Verb                        | Does                                                |
+| --------------------------- | --------------------------------------------------- |
+| `fm update`                 | Fast-forwards every clean clone, then runs that repo's update script. A dirty tree is skipped, never clobbered. |
+| `fm install <repo> [args…]` | Runs that repo's `install.sh`, forwarding every argument. |
+| `fm setup [--dry-run]`      | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
 
 ```bash
 fm list                 # rich table
 fm status --json        # machine-readable, parseable by an agent
 fm doctor               # exits non-zero if a check fails
+fm setup --dry-run      # read the plan before anything is written
 ```
 
-`fm status` and `fm doctor` resolve each repo under the workspace root — the
-parent of the directory `fm` runs in — so running it from inside one repo finds
-its siblings.
+### Repo Commands
+
+Repos mount their own verbs. A repo declares them in a top-level `fm.json`:
+
+```json
+{
+  "version": 1,
+  "commands": {
+    "teleop": {"script": "scripts/run/teleop.sh", "help": "jog a robot arm"}
+  }
+}
+```
+
+Each entry becomes a flat verb, run from inside that repo's checkout with every
+argument forwarded untouched:
+
+```bash
+fm teleop --robot openarm --backend mock    # runs fm_ros2's teleop.sh
+```
+
+The CLI parses none of those flags, so the script stays the single source of
+truth for its own interface. Two repos claiming one verb is reported by
+`fm doctor`, and the first in registry order keeps it; a manifest can never
+shadow a built-in verb. `fm --help` lists whatever the repos on this machine
+declare.
+
+### Workspace Root
+
+Every verb resolves repos under one workspace root, chosen in this order:
+
+1. `FM_HOME`, if set
+2. `~/.config/fm/config.json`, holding `{"root": "/path/to/workspace"}`
+3. detection — the nearby directory holding the most registered clones
+4. `~`
+
+Detection adopts an existing layout exactly where it is; `fm` never moves a
+checkout.
 
 ### Install the CLI
 
@@ -90,14 +130,16 @@ your shell. Override the release with `FM_TOOLS_REF` (git tag) or `FM_TOOLS_REPO
 
 ### Boundary: delegate, never duplicate
 
-The CLI owns cross-repo verbs only. Each repo keeps its own bootstrap front door
-(`install.sh` / `run.sh`); `fm` never reimplements that logic. v1 is read-only:
-it shells out to `git` for status and resolves declared checks for doctor,
-nothing more. The repo registry is an in-package Python module (not TOML) so it
-stays zero-dependency and packages with the wheel.
+The CLI owns discovery, routing, and reporting — nothing else. Each repo keeps
+its own bootstrap front door (`install.sh` / `run.sh`) and its own workflow
+scripts; `fm` finds them, runs them, and reports what happened. It shells out to
+`git` for state, and it never reimplements what a repo already does. The repo
+registry is an in-package Python module (not TOML) so it stays zero-dependency
+and packages with the wheel; the verbs a repo exposes live in that repo's
+`fm.json`, so adding one needs no release of this wheel.
 
-Deferred to v2: delegating verbs (`install`, `run`, `update`), GitHub org
-auto-discovery, an external config-file override, and an interactive `pick` menu.
+Still deferred: GitHub org auto-discovery, a `--stable` release channel, and an
+interactive `pick` menu over the verbs.
 
 ## Development
 
