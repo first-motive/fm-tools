@@ -1,14 +1,22 @@
-"""fm — a thin, read-only CLI over every First Motive repo.
+"""fm — a thin CLI over every First Motive repo.
 
 One discoverable, machine-readable surface for developers and AI agents: which
 fm-* repos exist (``list``), their cross-repo git state (``status``), and
 environment health (``doctor``). The CLI owns cross-repo verbs only — bootstrap
-logic stays in each repo's own scripts, so v1 shells out to ``git`` and to
-declared health checks, nothing more.
+logic and workflow behavior stay in each repo's own scripts, which ``fm`` shells
+out to and never reimplements.
 
-Every read verb takes ``--json`` (stable output for agents and CI) and defaults
-to a rich table for humans. The dispatcher here wires argparse to one handler
-per verb; verbs are registered by :func:`_build_parser` as they are added.
+Two kinds of verb share the surface:
+
+- **built-in** — ``list``, ``status``, ``doctor``, ``update``. Each takes
+  ``--json`` (stable output for agents and CI) and defaults to a rich table.
+- **manifest** — whatever the repos declare in their own ``fm.json``
+  (see :mod:`fm_tools.cli.manifest`). ``fm teleop --robot openarm`` runs
+  fm_ros2's teleop script with every argument forwarded verbatim.
+
+Manifest verbs are matched before argparse: argparse would try to interpret the
+script's own flags, and forwarding them untouched is the whole contract. A
+built-in name always wins, so a manifest cannot shadow ``status``.
 """
 
 from __future__ import annotations
@@ -21,6 +29,10 @@ from rich.console import Console
 from rich.table import Table
 
 from .registry import REPOS
+
+# Verb names the CLI owns. A repo manifest that claims one of these is reported
+# as a collision and left unmounted — built-ins are never shadowed.
+BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update"})
 
 
 def _list_payload() -> list[dict]:
@@ -83,10 +95,28 @@ def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
     verb.set_defaults(func=handler)
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _manifest_epilog(commands: dict) -> str:
+    """Render discovered manifest verbs for ``fm --help``.
+
+    Built-in help comes from argparse; manifest verbs are not argparse
+    subcommands (they are matched before parsing), so they are listed here —
+    otherwise ``fm --help`` would hide half the surface.
+    """
+    if not commands:
+        return ""
+    lines = [
+        f"  {name:<12} {command.help or command.script.name} ({command.repo})"
+        for name, command in sorted(commands.items())
+    ]
+    return "repo commands (declared in each repo's fm.json):\n" + "\n".join(lines)
+
+
+def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fm",
-        description="Read-only CLI over First Motive repos.",
+        description="Cross-repo CLI over First Motive repos.",
+        epilog=_manifest_epilog(commands or {}),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="verb", required=True)
     _add_read_verb(sub, "list", "list every registered fm-* repo", _cmd_list)
@@ -113,9 +143,25 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code.
 
-    ``fm <verb> [--json]``. Each verb returns its own exit code.
+    ``fm <verb> [args...]``. A manifest verb is dispatched first, with its args
+    untouched; anything else goes to argparse, which owns the built-in verbs and
+    every usage error.
     """
-    args = _build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    from .manifest import discover
+    from .workspace import resolve_root
+
+    argv = sys.argv[1:] if argv is None else argv
+    root = resolve_root()
+    discovery = discover(root, reserved=BUILTIN_VERBS)
+
+    if argv and argv[0] not in BUILTIN_VERBS and not argv[0].startswith("-"):
+        from .dispatch import dispatch
+
+        code = dispatch(discovery, argv[0], argv[1:])
+        if code is not None:
+            return code
+
+    args = _build_parser(discovery.commands).parse_args(argv)
     return args.func(args)
 
 
