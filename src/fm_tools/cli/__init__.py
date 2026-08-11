@@ -28,7 +28,7 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
-from .registry import REPOS
+from .registry import REPOS, ROLES
 
 # Verb names the CLI owns. A repo manifest that claims one of these is reported
 # as a collision and left unmounted — built-ins are never shadowed.
@@ -92,7 +92,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     """``fm setup`` — clone, install, then prove it with doctor (lazy import)."""
     from .setup import run_setup
 
-    return run_setup(json_out=args.json, dry_run=args.dry_run)
+    return run_setup(json_out=args.json, dry_run=args.dry_run, role=args.role)
 
 
 def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
@@ -163,6 +163,15 @@ def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="report the plan without cloning or installing anything",
+    )
+    # The role does not change which repos are set up, only what each repo's
+    # installer is told — the flags themselves are declared in the registry,
+    # because a flag one installer understands is an error to another.
+    setup.add_argument(
+        "--role",
+        choices=ROLES,
+        default=None,
+        help="what this machine is for; decides each installer's arguments",
     )
     setup.set_defaults(func=_cmd_setup)
     return parser

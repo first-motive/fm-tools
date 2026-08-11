@@ -7,6 +7,7 @@ import pytest
 
 from fm_tools.cli import main
 from fm_tools.cli import update as update_mod
+from fm_tools.cli.registry import REPOS
 from fm_tools.cli.update import gather_updates, run_update
 
 
@@ -87,12 +88,7 @@ def test_run_update_exits_zero_when_no_failures(workspace):
 def test_run_update_json_is_valid(workspace, capsys):
     run_update(json_out=True, base=workspace)
     payload = json.loads(capsys.readouterr().out)
-    assert {row["name"] for row in payload} == {
-        "fm-ai",
-        "fm-ros2",
-        "fm-desktop",
-        "fm-tools",
-    }
+    assert {row["name"] for row in payload} == {repo.name for repo in REPOS}
 
 
 def test_stable_channel_is_a_stub(capsys):

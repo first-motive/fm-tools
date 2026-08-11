@@ -58,14 +58,25 @@ Verbs that act, each by handing the work to a repo's own script:
 | --------------------------- | --------------------------------------------------- |
 | `fm update`                 | Fast-forwards every clean clone, then runs that repo's update script. A dirty tree is skipped, never clobbered. |
 | `fm install <repo> [args…]` | Runs that repo's `install.sh`, forwarding every argument. |
-| `fm setup [--dry-run]`      | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
+| `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
 
 ```bash
-fm list                 # rich table
-fm status --json        # machine-readable, parseable by an agent
-fm doctor               # exits non-zero if a check fails
-fm setup --dry-run      # read the plan before anything is written
+fm list                       # rich table
+fm status --json              # machine-readable, parseable by an agent
+fm doctor                     # exits non-zero if a check fails
+fm setup --dry-run            # read the plan before anything is written
+fm setup --role workstation   # stand up a GPU workstation
+fm setup --role jetson        # stand up a Jetson capture rig
 ```
+
+`--role` never changes which repos are set up. It decides what each repo's
+installer is told: on a Jetson, `fm-setup` is given `--jetson` and `fm-ros2` is
+given `--recorder --service`. Those flags are declared per repo in the registry,
+because a flag one installer understands is an error to another.
+
+A repo that names a platform is skipped elsewhere rather than cloned and failed
+against — `fm-desktop` is a native macOS app, so a Linux setup run skips it, and
+`fm-setup` provisions machines, so a macOS run skips that.
 
 ### Repo Commands
 

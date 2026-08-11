@@ -4,16 +4,19 @@ import pytest
 
 from fm_tools.cli.registry import (
     CHECK_KINDS,
+    PLATFORMS,
     REPOS,
     HealthCheck,
     Repo,
+    RoleArgs,
+    current_platform,
     repo_names,
 )
 
-EXPECTED = {"fm-ai", "fm-ros2", "fm-desktop", "fm-tools"}
+EXPECTED = {"fm-ai", "fm-setup", "fm-ros2", "fm-desktop", "fm-tools"}
 
 
-def test_registry_covers_the_four_sibling_repos():
+def test_registry_covers_every_sibling_repo():
     # fm-docker is vendored inside fm_ros2, never cloned beside it.
     assert {repo.name for repo in REPOS} == EXPECTED
     assert set(repo_names()) == EXPECTED
@@ -76,3 +79,37 @@ def test_only_fm_ros2_declares_an_update_script():
     scripts = {repo.name: repo.update_script for repo in REPOS}
     assert scripts["fm-ros2"] == "scripts/update.sh"
     assert all(script == "" for name, script in scripts.items() if name != "fm-ros2")
+
+
+def test_role_args_reject_an_unknown_role():
+    with pytest.raises(ValueError):
+        RoleArgs("toaster", ("--toast",))
+
+
+def test_current_platform_names_this_machine():
+    assert current_platform() in PLATFORMS
+
+
+def test_fm_setup_is_linux_only_and_carries_both_roles():
+    fm_setup = next(repo for repo in REPOS if repo.name == "fm-setup")
+    assert fm_setup.platforms == ("linux",)
+    assert fm_setup.applies_to("linux")
+    assert not fm_setup.applies_to("macos")
+    assert fm_setup.args_for("workstation") == ["--workstation"]
+    assert fm_setup.args_for("jetson") == ["--jetson"]
+
+
+def test_every_declared_platform_is_known():
+    for repo in REPOS:
+        assert set(repo.platforms) <= set(PLATFORMS)
+
+
+def test_repo_rejects_an_unknown_platform():
+    with pytest.raises(ValueError):
+        Repo(
+            name="fm-toaster",
+            url="https://example.invalid/fm-toaster.git",
+            local_dir="fm-toaster",
+            entry_points=("install.sh",),
+            platforms=("toasteros",),
+        )

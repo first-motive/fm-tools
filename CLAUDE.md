@@ -36,8 +36,11 @@ Verbs that act, each by delegating to a repo's own script:
 
 - `fm update` — fast-forward every clean clone, then run its update script
 - `fm install <repo> [args…]` — run that repo's `install.sh`, args forwarded
-- `fm setup [--dry-run]` — clone what is missing, adopt what exists, install,
-  then print doctor's verdict
+- `fm setup [--role workstation|jetson] [--dry-run]` — clone what is missing,
+  adopt what exists, install, then print doctor's verdict. The role decides each
+  installer's arguments (declared per repo in `registry.py`, never passed
+  through from the command line); a repo that names a platform is skipped on
+  every other one.
 - anything a repo declares in its `fm.json` (see the contract below)
 
 Repos are resolved under one workspace root: `FM_HOME`, else
