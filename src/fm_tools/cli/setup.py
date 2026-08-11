@@ -15,6 +15,10 @@ Two safety rules the rollout depends on:
   ``.git`` inside, is reported ``blocked``. Setup stops on it rather than
   guessing what the developer meant.
 
+``--role`` names what the machine is for. It never changes which repos are set
+up; it decides what each repo's installer is told, so one command stands up a
+GPU workstation or a Jetson capture rig from the same registry.
+
 ``--dry-run`` reports the plan and writes nothing.
 """
 
@@ -30,7 +34,7 @@ from rich.table import Table
 
 from .doctor import gather_checks, render_checks
 from .install import run_installer
-from .registry import REPOS, Repo
+from .registry import REPOS, Repo, current_platform
 from .workspace import resolve_root
 
 
@@ -39,13 +43,21 @@ def _step(repo: str, action: str, ok: bool, detail: str = "") -> dict:
     return {"name": repo, "action": action, "ok": ok, "detail": detail}
 
 
-def plan_repo(repo: Repo, root: Path) -> dict:
+def plan_repo(repo: Repo, root: Path, plat: str | None = None) -> dict:
     """What setup would do for one repo, without doing any of it.
 
     A symlinked checkout is adopted like any other — developers legitimately keep
     a clone elsewhere and link it into the workspace — but the row names the
     target it points at, because installing runs a script from there.
+
+    A repo that does not apply to this platform is reported ``skip`` and nothing
+    else happens to it: cloning a macOS-only app onto a Jetson would leave a
+    checkout nobody can install and a doctor check nobody can pass.
     """
+    plat = plat if plat is not None else current_platform()
+    if not repo.applies_to(plat):
+        return _step(repo.name, "skip", True, f"{'/'.join(repo.platforms)} only, this is {plat}")
+
     checkout = root / repo.local_dir
     if (checkout / ".git").is_dir():
         where = str(checkout)
@@ -57,9 +69,10 @@ def plan_repo(repo: Repo, root: Path) -> dict:
     return _step(repo.name, "clone", True, repo.url)
 
 
-def gather_plan(root: Path) -> list[dict]:
+def gather_plan(root: Path, plat: str | None = None) -> list[dict]:
     """The full plan, one row per registered repo, in registry order."""
-    return [plan_repo(repo, root) for repo in REPOS]
+    plat = plat if plat is not None else current_platform()
+    return [plan_repo(repo, root, plat) for repo in REPOS]
 
 
 def _clone(repo: Repo, root: Path) -> dict:
@@ -73,26 +86,38 @@ def _clone(repo: Repo, root: Path) -> dict:
     return _step(repo.name, "clone", True, str(checkout))
 
 
-def _install(repo: Repo, root: Path) -> dict:
-    """Run one repo's installer, reusing the ``fm install`` delegate."""
-    code = run_installer(repo, root)
-    return _step(repo.name, "install", code == 0, "" if code == 0 else f"installer exited {code}")
+def _install(repo: Repo, root: Path, role: str | None = None) -> dict:
+    """Run one repo's installer, reusing the ``fm install`` delegate.
+
+    The arguments come from the repo's own role declaration, not from the caller:
+    each installer is handed the flags it understands for this machine's role,
+    and a repo that declares none is installed plainly.
+    """
+    args = repo.args_for(role)
+    code = run_installer(repo, root, args)
+    detail = " ".join(args) if code == 0 else f"installer exited {code}"
+    return _step(repo.name, "install", code == 0, detail)
 
 
-def _execute(root: Path) -> list[dict]:
+def _execute(root: Path, role: str | None = None, plat: str | None = None) -> list[dict]:
     """Carry out the plan: clone what is missing, then install every repo.
 
     A repo that fails to clone is not installed — there is nothing to install —
     but the other repos still run, so one unreachable remote does not abandon a
-    half-set-up machine.
+    half-set-up machine. A repo skipped for this platform is neither cloned nor
+    installed.
     """
+    plat = plat if plat is not None else current_platform()
     rows: list[dict] = []
     for repo in REPOS:
-        planned = plan_repo(repo, root)
+        planned = plan_repo(repo, root, plat)
+        if planned["action"] == "skip":
+            rows.append(planned)
+            continue
         row = _clone(repo, root) if planned["action"] == "clone" else planned
         rows.append(row)
         if row["ok"]:
-            rows.append(_install(repo, root))
+            rows.append(_install(repo, root, role))
     return rows
 
 
@@ -107,7 +132,12 @@ def _render(rows: list[dict], title: str) -> None:
     Console().print(table)
 
 
-def run_setup(json_out: bool = False, dry_run: bool = False, base: Path | None = None) -> int:
+def run_setup(
+    json_out: bool = False,
+    dry_run: bool = False,
+    base: Path | None = None,
+    role: str | None = None,
+) -> int:
     """``fm setup`` handler. Exits non-zero when a step or a doctor check fails."""
     root = base if base is not None else resolve_root()
 
@@ -119,7 +149,7 @@ def run_setup(json_out: bool = False, dry_run: bool = False, base: Path | None =
             _render(rows, f"fm setup (dry run) — {root}")
         return 0 if all(row["ok"] for row in rows) else 1
 
-    rows = _execute(root)
+    rows = _execute(root, role)
     checks = gather_checks(base=root)
     if json_out:
         print(jsonlib.dumps({"steps": rows, "doctor": checks}, indent=2))

@@ -12,7 +12,7 @@ import pytest
 
 from fm_tools.cli import main
 from fm_tools.cli import setup as setup_mod
-from fm_tools.cli.registry import REPOS
+from fm_tools.cli.registry import REPOS, current_platform
 from fm_tools.cli.setup import gather_plan, plan_repo, run_setup
 
 FM_ROS2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
@@ -87,7 +87,9 @@ def test_plan_covers_every_registered_repo(tmp_path):
 def test_dry_run_writes_nothing(tmp_path, capsys):
     assert run_setup(json_out=True, dry_run=True, base=tmp_path) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert [row["action"] for row in payload["steps"]] == ["clone"] * len(REPOS)
+    plat = current_platform()
+    expected = ["clone" if repo.applies_to(plat) else "skip" for repo in REPOS]
+    assert [row["action"] for row in payload["steps"]] == expected
     assert list(tmp_path.iterdir()) == []
 
 
@@ -103,8 +105,9 @@ def test_setup_clones_missing_repos_and_runs_installers(tmp_path, local_registry
 
     cloned = {row["name"] for row in payload["steps"] if row["action"] == "clone" and row["ok"]}
     installed = {row["name"] for row in payload["steps"] if row["action"] == "install"}
-    assert cloned == {repo.name for repo in REPOS}
-    assert installed == {repo.name for repo in REPOS}
+    applicable = {repo.name for repo in REPOS if repo.applies_to(current_platform())}
+    assert cloned == applicable
+    assert installed == applicable
     assert (workspace / FM_ROS2.local_dir / ".git").is_dir()
 
 
@@ -162,3 +165,94 @@ def test_setup_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):
 def test_setup_table_renders(tmp_path, capsys):
     assert run_setup(json_out=False, dry_run=True, base=tmp_path) == 0
     assert "fm setup" in capsys.readouterr().out
+
+
+def test_platform_only_repo_is_skipped_not_cloned(tmp_path):
+    macos_only = next(repo for repo in REPOS if repo.platforms == ("macos",))
+    row = plan_repo(macos_only, tmp_path, plat="linux")
+    assert row["action"] == "skip"
+    assert row["ok"] is True
+    assert "macos only" in row["detail"]
+
+
+def test_platform_repo_is_planned_normally_on_its_own_platform(tmp_path):
+    macos_only = next(repo for repo in REPOS if repo.platforms == ("macos",))
+    assert plan_repo(macos_only, tmp_path, plat="macos")["action"] == "clone"
+
+
+def test_repo_without_platforms_applies_everywhere(tmp_path):
+    anywhere = next(repo for repo in REPOS if not repo.platforms)
+    assert plan_repo(anywhere, tmp_path, plat="linux")["action"] == "clone"
+    assert plan_repo(anywhere, tmp_path, plat="macos")["action"] == "clone"
+
+
+def test_role_decides_each_installers_arguments():
+    assert FM_ROS2.args_for("workstation") == ["--processor", "--service"]
+    assert FM_ROS2.args_for("jetson") == ["--recorder", "--service"]
+    assert FM_ROS2.args_for(None) == []
+
+
+def test_repo_without_role_args_installs_plainly():
+    fm_ai = next(repo for repo in REPOS if repo.name == "fm-ai")
+    assert fm_ai.args_for("workstation") == []
+
+
+def test_setup_forwards_role_args_to_the_installer(tmp_path, monkeypatch, capsys):
+    """The installer records the arguments it was handed, and the row reports them."""
+    recorder = tmp_path / "args.txt"
+    installer = f'#!/bin/sh\necho "$@" >> {recorder}\nexit 0\n'
+    patched = tuple(
+        replace(repo, url=str(_origin(tmp_path, repo.name, installer)), platforms=())
+        for repo in REPOS
+    )
+    monkeypatch.setattr(setup_mod, "REPOS", patched)
+
+    run_setup(json_out=True, base=tmp_path / "workspace", role="jetson")
+    payload = json.loads(capsys.readouterr().out)
+
+    row = next(
+        row
+        for row in payload["steps"]
+        if row["name"] == FM_ROS2.name and row["action"] == "install"
+    )
+    assert row["detail"] == "--recorder --service"
+    assert "--recorder --service" in recorder.read_text()
+
+
+def test_setup_without_a_role_forwards_nothing(tmp_path, monkeypatch, capsys):
+    recorder = tmp_path / "args.txt"
+    installer = f'#!/bin/sh\necho "[$@]" >> {recorder}\nexit 0\n'
+    patched = tuple(
+        replace(repo, url=str(_origin(tmp_path, repo.name, installer)), platforms=())
+        for repo in REPOS
+    )
+    monkeypatch.setattr(setup_mod, "REPOS", patched)
+
+    run_setup(json_out=True, base=tmp_path / "workspace")
+    capsys.readouterr()
+    assert recorder.read_text().strip().splitlines() == ["[]"] * len(REPOS)
+
+
+def test_role_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):
+    """A role is accepted on the dry-run path, and the plan it reports is the same.
+
+    The role changes what installers are told, never which repos are set up, so
+    a dry run with a role plans exactly what a dry run without one does.
+    """
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    assert main(["setup", "--dry-run", "--json", "--role", "workstation"]) == 0
+    with_role = json.loads(capsys.readouterr().out)["steps"]
+
+    assert main(["setup", "--dry-run", "--json"]) == 0
+    without_role = json.loads(capsys.readouterr().out)["steps"]
+
+    plat = current_platform()
+    expected = ["clone" if repo.applies_to(plat) else "skip" for repo in REPOS]
+    assert [row["action"] for row in with_role] == expected
+    assert with_role == without_role
+
+
+def test_unknown_role_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    with pytest.raises(SystemExit):
+        main(["setup", "--dry-run", "--role", "toaster"])

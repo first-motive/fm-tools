@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from fm_tools.cli import main
+from fm_tools.cli.registry import REPOS
 from fm_tools.cli.status import gather_status, run_status
 
 
@@ -70,12 +71,7 @@ def test_no_upstream_leaves_ahead_behind_null(workspace):
 def test_run_status_json_is_valid_and_exits_zero(workspace, capsys):
     assert run_status(json_out=True, base=workspace, fetch=False) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert {row["name"] for row in payload} == {
-        "fm-ai",
-        "fm-ros2",
-        "fm-desktop",
-        "fm-tools",
-    }
+    assert {row["name"] for row in payload} == {repo.name for repo in REPOS}
 
 
 def test_run_status_table_exits_zero(workspace, capsys):
