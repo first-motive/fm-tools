@@ -52,6 +52,7 @@ Reporting verbs, all read-only and all taking `--json`:
 | `fm status` | Per-repo git state — branch, clean/dirty, ahead/behind. Repos not on disk are reported as `not cloned`, never faked. |
 | `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid, installed `fm` matching its checkout). Exits non-zero when any check fails, so it drops into CI. |
 | `fm commands` | Every verb this `fm` answers to — built-in, forwarding, and whatever the repos on this machine mount. The list an agent should read instead of scraping `--help`. |
+| `fm root` | The resolved workspace root and which source chose it. |
 
 `fm --version` prints the running build, and names the fm-tools checkout's
 version when the two differ. That gap is worth printing: `fm` is installed from a
@@ -144,12 +145,53 @@ workflows: one mounted name, no release of `fm-tools` to add a verb behind it.
 Every verb resolves repos under one workspace root, chosen in this order:
 
 1. `FM_HOME`, if set
-2. `~/.config/fm/config.json`, holding `{"root": "/path/to/workspace"}`
-3. detection — the nearby directory holding the most registered clones
+2. the machine identity card's `workspace` — `/etc/fm/machine.json` on Linux,
+   `~/.config/fm/machine.json` on macOS, `$FM_MACHINE_FILE` to override
+3. `~/.config/fm/config.json`, holding `{"root": "/path/to/workspace"}`
 4. `~`
 
-Detection adopts an existing layout exactly where it is; `fm` never moves a
-checkout.
+The card outranks the config file because it is the host's own statement of what
+it is: on a provisioned machine the workspace is a property of the machine, and a
+stale per-user config that disagrees is the drift the card exists to delete.
+`FM_HOME` still beats both, because an override nobody can override is not one.
+
+Nothing in the chain reads the working directory, so `fm status` reports the same
+repos from anywhere on the machine. A card written to a schema this build does
+not know is **refused, not guessed at**, and a malformed config file is fatal
+rather than skipped — falling through to the next source is how a typo becomes a
+silently different workspace. A machine with no card at all is normal: a laptop
+in client mode has no workspace to declare.
+
+`fm root` says which root was chosen and which source said so:
+
+```bash
+fm root --json      # {"root": "/home/fm/fm", "source": "card", ...}
+```
+
+`fm` never moves a checkout — an existing layout is adopted exactly where it is.
+
+### Exit Codes
+
+One contract, every verb:
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | Success. |
+| 1 | Reported unhealthy state — `fm doctor` had a failing check. The command ran correctly; the answer is bad. |
+| 2 | Usage error — unknown verb, unknown repo, unknown flag, missing argument. Matches argparse's own code. |
+| 3 | Precondition failure — unresolvable workspace root, repo not cloned, declared script missing or not executable, a required credential unavailable, a machine card this build refuses to read. |
+| 4 | Delegate failure — a repo's own script ran and failed while `fm` was aggregating several of them (`fm update`, `fm setup`). |
+| 130 | Interrupted (SIGINT). |
+
+The passthrough verbs are the deliberate exception: `fm <repo verb>` and
+`fm install` each run exactly one process and return **its** exit code
+untouched, because going through `fm` must be indistinguishable from running the
+script directly. Codes 3 and 4 cover what `fm` itself detects on either side of
+that run.
+
+`fm status` fetches each clone by default, so its ahead/behind counts mean
+something. `fm status --no-fetch` answers from the refs already on disk — for a
+plane, a sealed CI runner, or an agent polling in a loop.
 
 ### Install the CLI
 

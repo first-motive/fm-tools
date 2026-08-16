@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 
+from . import exits
 from .manifest import Command, Discovery
 
-# The exit code a shell reports for a process killed by SIGINT (128 + 2).
-INTERRUPTED = 130
-
-
-def _warn(message: str) -> None:
-    print(f"fm: {message}", file=sys.stderr)
+# The exit code a shell reports for a process killed by SIGINT (128 + 2). Kept
+# as a name here because callers import it; the number is the contract's.
+INTERRUPTED = exits.INTERRUPTED
 
 
 def run_command(command: Command, args: list[str]) -> int:
@@ -31,13 +28,21 @@ def run_command(command: Command, args: list[str]) -> int:
     interactive launchers, and a developer watching a robot start up needs the
     live stream. Ctrl-C reaches the child directly; the parent reports the
     conventional 130 rather than a traceback.
+
+    The script's own exit code is returned unchanged. That is the passthrough
+    exception in the exit-code contract: ``fm teleop`` must be indistinguishable
+    from running ``teleop.sh``, and a launcher's 3 means what the launcher says
+    it means. A script that could not be run at all never started, so that case
+    is fm's own precondition failure rather than the script's result.
     """
     if not command.script.is_file():
-        _warn(f"{command.name}: {command.script} does not exist (declared by {command.repo})")
-        return 1
+        exits.fail(f"{command.name}: {command.script} does not exist (declared by {command.repo})")
+        return exits.PRECONDITION
     if not os.access(command.script, os.X_OK):
-        _warn(f"{command.name}: {command.script} is not executable (declared by {command.repo})")
-        return 1
+        exits.fail(
+            f"{command.name}: {command.script} is not executable (declared by {command.repo})"
+        )
+        return exits.PRECONDITION
 
     try:
         return subprocess.run(
@@ -63,6 +68,6 @@ def dispatch(discovery: Discovery, verb: str, args: list[str]) -> int | None:
 
     for problem in discovery.problems:
         if problem.kind == "collision" and problem.detail.startswith(f"{verb}:"):
-            _warn(f"{problem.detail} (declared again by {problem.repo})")
+            exits.fail(f"{problem.detail} (declared again by {problem.repo})")
 
     return run_command(command, args)

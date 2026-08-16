@@ -37,6 +37,7 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
+from . import exits
 from .commands import BUILTIN_VERBS, BUILTINS, FORWARDING_USAGE, FORWARDING_VERBS
 from .payload import emit
 from .registry import REPOS, ROLES
@@ -76,7 +77,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """``fm status`` — cross-repo git state (lazy import: git subprocessing)."""
     from .status import run_status
 
-    return run_status(json_out=args.json)
+    return run_status(json_out=args.json, fetch=not args.no_fetch)
+
+
+def _cmd_root(args: argparse.Namespace) -> int:
+    """``fm root`` — the resolved workspace root and its source (lazy import)."""
+    from .root import run_root
+
+    return run_root(json_out=args.json)
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -168,9 +176,26 @@ def _build_parser(commands: dict | None = None, version: str = "fm") -> argparse
     )
     sub = parser.add_subparsers(dest="verb", required=True)
     _add_read_verb(sub, "list", _cmd_list)
-    _add_read_verb(sub, "status", _cmd_status)
     _add_read_verb(sub, "doctor", _cmd_doctor)
+    _add_read_verb(sub, "root", _cmd_root)
     _add_read_verb(sub, "commands", _cmd_commands)
+
+    # status is the one read verb that touches the network — a fetch per clone,
+    # so its ahead/behind counts mean something. --no-fetch answers from what is
+    # already on disk, which is what a plane, a sealed CI runner, or an agent
+    # polling in a loop needs.
+    status = sub.add_parser("status", help=_help_for("status"))
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON instead of a table",
+    )
+    status.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="do not fetch first; report against the refs already on disk",
+    )
+    status.set_defaults(func=_cmd_status)
 
     # update writes (pulls), so it gets its own block: --json plus a --stable
     # channel flag on top of the shared read-verb surface.
@@ -222,10 +247,17 @@ def main(argv: list[str] | None = None) -> int:
     """
     from .manifest import discover
     from .version import version_line
-    from .workspace import resolve_root
+    from .workspace import RootError, resolve_root
 
     argv = sys.argv[1:] if argv is None else argv
-    root = resolve_root()
+    try:
+        root = resolve_root()
+    except RootError as exc:
+        # Every verb resolves repos under this root, so a root that cannot be
+        # trusted makes every one of them wrong. Refusing here, once, is the
+        # whole point of resolving loudly.
+        print(f"fm: {exc}", file=sys.stderr)
+        return exits.PRECONDITION
 
     if argv and argv[0] == "install":
         from .install import run_install

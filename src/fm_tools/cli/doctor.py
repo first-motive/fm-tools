@@ -30,6 +30,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from . import exits
 from .payload import emit
 from .registry import REPOS, HealthCheck, Repo
 from .workspace import resolve_root
@@ -206,14 +207,16 @@ def render_checks(rows: list[dict]) -> None:
 
 
 def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
-    """``fm doctor`` handler. Exits non-zero when any check fails.
+    """``fm doctor`` handler. Exits with the unhealthy code when a check fails.
 
-    Warnings never move the exit code — a repo with an undeclared workflow script
-    is worth flagging, not worth failing a build over.
+    Not a usage or precondition failure: the command ran exactly as asked and the
+    answer is bad, which is the one thing this verb exists to say. Warnings never
+    move the exit code — a repo with an undeclared workflow script is worth
+    flagging, not worth failing a build over.
     """
     rows = gather_checks(base)
     if json_out:
         emit("doctor", rows)
     else:
         render_checks(rows)
-    return 1 if any(row["level"] == "fail" for row in rows) else 0
+    return exits.UNHEALTHY if any(row["level"] == "fail" for row in rows) else exits.OK

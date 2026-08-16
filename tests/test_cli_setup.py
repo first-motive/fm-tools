@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from fm_tools.cli import main
+from fm_tools.cli import exits, main
 from fm_tools.cli import setup as setup_mod
 from fm_tools.cli.registry import REPOS, current_platform
 from fm_tools.cli.setup import gather_plan, plan_repo, run_setup
@@ -95,7 +95,7 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
 
 def test_dry_run_reports_a_blocked_path(tmp_path):
     (tmp_path / FM_ROS2.local_dir).mkdir(parents=True)
-    assert run_setup(json_out=True, dry_run=True, base=tmp_path) == 1
+    assert run_setup(json_out=True, dry_run=True, base=tmp_path) == exits.PRECONDITION
 
 
 def test_setup_clones_missing_repos_and_runs_installers(tmp_path, local_registry, capsys):
@@ -134,7 +134,7 @@ def test_failing_installer_fails_the_run(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(setup_mod, "REPOS", patched)
 
-    assert run_setup(json_out=True, base=tmp_path / "workspace") == 1
+    assert run_setup(json_out=True, base=tmp_path / "workspace") == exits.DELEGATE
     payload = json.loads(capsys.readouterr().out)["data"]
     assert all(not row["ok"] for row in payload["steps"] if row["action"] == "install")
 
@@ -143,7 +143,7 @@ def test_blocked_repo_is_never_installed(tmp_path, local_registry, capsys):
     workspace = tmp_path / "workspace"
     (workspace / FM_ROS2.local_dir).mkdir(parents=True)
 
-    assert run_setup(json_out=True, base=workspace) == 1
+    assert run_setup(json_out=True, base=workspace) == exits.PRECONDITION
     payload = json.loads(capsys.readouterr().out)["data"]
     for_repo = [row["action"] for row in payload["steps"] if row["name"] == FM_ROS2.name]
     assert for_repo == ["blocked"]

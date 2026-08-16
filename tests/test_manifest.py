@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from fm_tools.cli import BUILTIN_VERBS, main
+from fm_tools.cli import BUILTIN_VERBS, exits, main
 from fm_tools.cli.dispatch import dispatch, run_command
 from fm_tools.cli.manifest import discover, load_manifest
 from fm_tools.cli.registry import REPOS
@@ -156,7 +156,7 @@ def test_missing_script_fails_the_run_with_a_message(tmp_path, capsys):
     _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "gone.sh"}})
     discovery = discover(tmp_path)
 
-    assert dispatch(discovery, "teleop", []) == 1
+    assert dispatch(discovery, "teleop", []) == exits.PRECONDITION
     assert "does not exist" in capsys.readouterr().err
 
 
@@ -164,7 +164,7 @@ def test_non_executable_script_fails_the_run(tmp_path, capsys):
     checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
     _script(checkout, "run.sh", executable=False)
 
-    assert run_command(discover(tmp_path).commands["teleop"], []) == 1
+    assert run_command(discover(tmp_path).commands["teleop"], []) == exits.PRECONDITION
     assert "not executable" in capsys.readouterr().err
 
 

@@ -1,6 +1,6 @@
 """fm install tests — repo resolution, delegation, and arg forwarding."""
 
-from fm_tools.cli import main
+from fm_tools.cli import exits, main
 from fm_tools.cli.install import USAGE_ERROR, find_repo, run_install
 
 
@@ -36,19 +36,19 @@ def test_help_exits_clean(tmp_path, capsys):
 
 
 def test_uncloned_repo_points_at_setup(tmp_path, capsys):
-    assert run_install(["fm-ros2"], tmp_path) == 1
+    assert run_install(["fm-ros2"], tmp_path) == exits.PRECONDITION
     assert "fm setup" in capsys.readouterr().err
 
 
 def test_missing_installer_fails(tmp_path, capsys):
     (tmp_path / "fm_ros2" / ".git").mkdir(parents=True)
-    assert run_install(["fm-ros2"], tmp_path) == 1
+    assert run_install(["fm-ros2"], tmp_path) == exits.PRECONDITION
     assert "no install.sh" in capsys.readouterr().err
 
 
 def test_non_executable_installer_fails(tmp_path, capsys):
     _clone(tmp_path, "fm_ros2", executable=False)
-    assert run_install(["fm-ros2"], tmp_path) == 1
+    assert run_install(["fm-ros2"], tmp_path) == exits.PRECONDITION
     assert "not executable" in capsys.readouterr().err
 
 

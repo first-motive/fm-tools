@@ -64,6 +64,7 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("list", "list every registered fm-* repo"),
     Builtin("status", "cross-repo git state for cloned repos"),
     Builtin("doctor", "run each repo's declared health checks"),
+    Builtin("root", "which workspace root fm resolved, and from where"),
     Builtin("commands", "every verb this fm answers to, for agents and CI"),
     Builtin("update", "pull and delegate an update per cloned repo"),
     Builtin("setup", "clone, install, and verify the whole workspace"),

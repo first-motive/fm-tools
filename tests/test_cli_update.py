@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from fm_tools.cli import main
+from fm_tools.cli import exits, main
 from fm_tools.cli import update as update_mod
 from fm_tools.cli.registry import REPOS
 from fm_tools.cli.update import gather_updates, run_update
@@ -92,13 +92,13 @@ def test_run_update_json_is_valid(workspace, capsys):
 
 
 def test_stable_channel_is_a_stub(capsys):
-    assert run_update(stable=True) == 1
+    assert run_update(stable=True) == exits.USAGE
     assert "not yet cut" in capsys.readouterr().err
 
 
 def test_update_verb_dispatches_stable_via_main(capsys):
     # --stable short-circuits before any git, so it needs no workspace.
-    assert main(["update", "--stable"]) == 1
+    assert main(["update", "--stable"]) == exits.USAGE
     assert "not yet cut" in capsys.readouterr().err
 
 
@@ -122,7 +122,7 @@ def test_pull_failure_marks_row_not_ok_and_exits_one(workspace, capsys):
     assert fm_tools["ok"] is False
     assert fm_tools["detail"]
 
-    assert run_update(json_out=True, base=workspace) == 1
+    assert run_update(json_out=True, base=workspace) == exits.DELEGATE
 
 
 def _clone_fm_ros2(tmp_path, script_body):
@@ -156,7 +156,7 @@ def test_failing_update_script_marks_row_not_ok_and_exits_one(tmp_path):
     assert fm_ros2["action"] == "updated"
     assert fm_ros2["ok"] is False
     assert fm_ros2["detail"] == "boom"
-    assert run_update(json_out=True, base=tmp_path) == 1
+    assert run_update(json_out=True, base=tmp_path) == exits.DELEGATE
 
 
 def test_escaping_update_script_is_not_executed(tmp_path, monkeypatch):

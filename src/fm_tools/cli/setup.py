@@ -31,6 +31,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from . import exits
 from .doctor import gather_checks, render_checks
 from .install import run_installer
 from .payload import emit
@@ -138,7 +139,14 @@ def run_setup(
     base: Path | None = None,
     role: str | None = None,
 ) -> int:
-    """``fm setup`` handler. Exits non-zero when a step or a doctor check fails."""
+    """``fm setup`` handler, exiting under the shared contract.
+
+    Three outcomes are distinguished because a caller has to act differently on
+    each: a plan that cannot be carried out on this machine (something sits where
+    a clone belongs) is a precondition failure; a clone or an installer that ran
+    and failed is a delegate failure; and a run that completed with a failing
+    doctor check is a reported unhealthy state, which is the CI signal.
+    """
     root = base if base is not None else resolve_root()
 
     if dry_run:
@@ -147,7 +155,9 @@ def run_setup(
             emit("setup", {"steps": rows, "doctor": []})
         else:
             _render(rows, f"fm setup (dry run) — {root}")
-        return 0 if all(row["ok"] for row in rows) else 1
+        # The only way a plan fails is `blocked`: a path that is not a clone is
+        # in the way, which is the machine's state, not a delegate's result.
+        return exits.OK if all(row["ok"] for row in rows) else exits.PRECONDITION
 
     rows = _execute(root, role)
     checks = gather_checks(base=root)
@@ -157,7 +167,8 @@ def run_setup(
         _render(rows, f"fm setup — {root}")
         render_checks(checks)
 
-    failed = any(not row["ok"] for row in rows) or any(
-        check["level"] == "fail" for check in checks
-    )
-    return 1 if failed else 0
+    if any(row["action"] == "blocked" for row in rows):
+        return exits.PRECONDITION
+    if any(not row["ok"] for row in rows):
+        return exits.DELEGATE
+    return exits.UNHEALTHY if any(check["level"] == "fail" for check in checks) else exits.OK
