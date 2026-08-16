@@ -6,13 +6,15 @@ Registry check kinds, both read-only (see :mod:`fm_tools.cli.registry`):
   workspace root
 - ``tool``  — the named binary resolves on ``PATH``
 
-Three derived kinds are synthesized on top:
+Four derived kinds are synthesized on top:
 
 - ``sync``       — the clone is not behind its origin
 - ``manifest``   — the repo's ``fm.json`` parses, and every verb it declares
   points at a script that exists, is executable, and is not claimed twice
 - ``undeclared`` — a heuristic: workflow scripts sitting in ``scripts/run/`` that
   the manifest never declares, so the CLI cannot reach them
+- ``version``    — the installed ``fm`` was built from the fm-tools checkout that
+  is on this machine, and not from an older tag
 
 Every row carries a ``level``: ``pass``, ``fail``, or ``warn``. Only ``fail``
 moves the exit code, so ``doctor`` still drops into CI as a gate while the
@@ -22,13 +24,13 @@ undeclared-script heuristic nudges without breaking a build over a judgement cal
 
 from __future__ import annotations
 
-import json as jsonlib
 import shutil
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
+from .payload import emit
 from .registry import REPOS, HealthCheck, Repo
 from .workspace import resolve_root
 
@@ -138,6 +140,36 @@ def _undeclared_rows(base: Path) -> list[dict]:
     return rows
 
 
+def _version_rows(base: Path) -> list[dict]:
+    """One row comparing the running ``fm`` against the fm-tools checkout.
+
+    This is the check that would have caught the worst failure the CLI has had:
+    an installed 0.3.0 running against a 0.4.1 checkout hid six mounted verbs,
+    and every symptom pointed at the manifests instead of at the binary. Drift
+    fails rather than warns — a verb that exists in the repo and not on the
+    machine is indistinguishable from a bug until this row is read.
+
+    No row at all when either number is unknown (the package is not installed,
+    or fm-tools is not cloned here): there is nothing to compare, and inventing
+    a failing row would make doctor red on a working development machine.
+    """
+    from .version import drift
+
+    mismatch = drift(base)
+    if mismatch is None:
+        return []
+    running, declared = mismatch
+    return [
+        _row(
+            "fm-tools",
+            f"installed fm {running} does not match the checkout's {declared} "
+            "— reinstall with fm-tools/install.sh",
+            "version",
+            "fail",
+        )
+    ]
+
+
 def gather_checks(base: Path | None = None) -> list[dict]:
     """Run every declared check for every repo under ``base``.
 
@@ -150,6 +182,7 @@ def gather_checks(base: Path | None = None) -> list[dict]:
     rows.extend(_sync_rows(root))
     rows.extend(_manifest_rows(root))
     rows.extend(_undeclared_rows(root))
+    rows.extend(_version_rows(root))
     return rows
 
 
@@ -180,7 +213,7 @@ def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
     """
     rows = gather_checks(base)
     if json_out:
-        print(jsonlib.dumps(rows, indent=2))
+        emit("doctor", rows)
     else:
         render_checks(rows)
     return 1 if any(row["level"] == "fail" for row in rows) else 0

@@ -50,7 +50,25 @@ Reporting verbs, all read-only and all taking `--json`:
 | ----------- | ------------------------------------------------------------- |
 | `fm list`   | Every registered `fm-*` repo: name, git URL, entry points.    |
 | `fm status` | Per-repo git state — branch, clean/dirty, ahead/behind. Repos not on disk are reported as `not cloned`, never faked. |
-| `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid). Exits non-zero when any check fails, so it drops into CI. |
+| `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid, installed `fm` matching its checkout). Exits non-zero when any check fails, so it drops into CI. |
+| `fm commands` | Every verb this `fm` answers to — built-in, forwarding, and whatever the repos on this machine mount. The list an agent should read instead of scraping `--help`. |
+
+`fm --version` prints the running build, and names the fm-tools checkout's
+version when the two differ. That gap is worth printing: `fm` is installed from a
+pinned tag while its source keeps moving, and an installed build that has fallen
+behind simply does not have the verbs the checkout declares. `fm doctor` fails on
+the same drift.
+
+Every `--json` payload is wrapped in a versioned envelope, so a reader can tell
+which contract it is reading:
+
+```json
+{"schema_version": 1, "verb": "status", "data": [ ... ]}
+```
+
+`data` is the verb's rows. The version bumps when a field changes meaning or
+disappears — never when one is added, since a reader that ignores unknown keys
+keeps working.
 
 Verbs that act, each by handing the work to a repo's own script:
 
@@ -102,7 +120,24 @@ The CLI parses none of those flags, so the script stays the single source of
 truth for its own interface. Two repos claiming one verb is reported by
 `fm doctor`, and the first in registry order keeps it; a manifest can never
 shadow a built-in verb. `fm --help` lists whatever the repos on this machine
-declare.
+declare, and `fm commands --json` says the same thing to an agent.
+
+#### Nouns, not just verbs
+
+Because arguments are forwarded untouched, a repo can mount a **noun** and let
+its script dispatch the verb:
+
+```bash
+fm machine init --name fm-rec-01   # runs fm-setup's scripts/run/machine.sh init
+fm machine show --json
+```
+
+`fm.json` declares `machine` once; `init`, `show`, `doctor`, and `reset` live in
+the script, where the work does. The dispatcher needs no knowledge of this and
+must never gain any — noun-verb is a property of forwarding arguments verbatim,
+and special-casing it in the CLI would put half of a repo's interface back in
+this wheel. Prefer a noun whenever a repo has more than one or two related
+workflows: one mounted name, no release of `fm-tools` to add a verb behind it.
 
 ### Workspace Root
 

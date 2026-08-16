@@ -87,7 +87,7 @@ def test_run_update_exits_zero_when_no_failures(workspace):
 
 def test_run_update_json_is_valid(workspace, capsys):
     run_update(json_out=True, base=workspace)
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert {row["name"] for row in payload} == {repo.name for repo in REPOS}
 
 

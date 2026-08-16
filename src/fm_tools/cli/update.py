@@ -12,7 +12,6 @@ a stub until the stable channel is cut; today only the edge channel exists.
 
 from __future__ import annotations
 
-import json as jsonlib
 import os
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from .payload import emit
 from .registry import REPOS, Repo
 from .workspace import resolve_root
 
@@ -129,7 +129,7 @@ def run_update(json_out: bool = False, base: Path | None = None, stable: bool = 
 
     rows = gather_updates(base)
     if json_out:
-        print(jsonlib.dumps(rows, indent=2))
+        emit("update", rows)
     else:
         _render_table(rows)
     return 1 if any(not row["ok"] for row in rows) else 0

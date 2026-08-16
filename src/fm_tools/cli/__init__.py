@@ -8,8 +8,9 @@ out to and never reimplements.
 
 Two kinds of verb share the surface:
 
-- **built-in** — ``list``, ``status``, ``doctor``, ``update``. Each takes
-  ``--json`` (stable output for agents and CI) and defaults to a rich table.
+- **built-in** — ``list``, ``status``, ``doctor``, ``commands``, ``update``,
+  ``setup``, ``install``. Each takes ``--json`` (stable, versioned output for
+  agents and CI — see :mod:`fm_tools.cli.payload`) and defaults to a rich table.
 - **manifest** — whatever the repos declare in their own ``fm.json``
   (see :mod:`fm_tools.cli.manifest`). ``fm teleop --robot openarm`` runs
   fm_ros2's teleop script with every argument forwarded verbatim.
@@ -17,26 +18,30 @@ Two kinds of verb share the surface:
 Manifest verbs are matched before argparse: argparse would try to interpret the
 script's own flags, and forwarding them untouched is the whole contract. A
 built-in name always wins, so a manifest cannot shadow ``status``.
+
+Because the forwarding is verbatim, a repo can mount a **noun** and dispatch the
+verb itself: ``fm machine init`` reaches fm-setup's ``scripts/run/machine.sh``
+with ``init`` still in the argument list. The dispatcher knows nothing about
+this — it falls out of forwarding args untouched, and must stay that way.
+
+``fm commands --json`` is the machine-readable version of this surface, and the
+one an agent should read instead of ``--help`` prose (see
+:mod:`fm_tools.cli.commands`).
 """
 
 from __future__ import annotations
 
 import argparse
-import json as jsonlib
 import sys
 
 from rich.console import Console
 from rich.table import Table
 
+from .commands import BUILTIN_VERBS, BUILTINS, FORWARDING_USAGE, FORWARDING_VERBS
+from .payload import emit
 from .registry import REPOS, ROLES
 
-# Verb names the CLI owns. A repo manifest that claims one of these is reported
-# as a collision and left unmounted — built-ins are never shadowed.
-#
-# The forwarding verbs (install, setup) are parsed by hand for the same reason
-# manifest verbs are: everything after the verb belongs to a repo's own script.
-FORWARDING_VERBS = frozenset({"install"})
-BUILTIN_VERBS = frozenset({"list", "status", "doctor", "update", "setup"}) | FORWARDING_VERBS
+__all__ = ["BUILTIN_VERBS", "FORWARDING_VERBS", "main"]
 
 
 def _list_payload() -> list[dict]:
@@ -55,7 +60,7 @@ def _list_payload() -> list[dict]:
 def _cmd_list(args: argparse.Namespace) -> int:
     """``fm list`` — every registered repo, as JSON or a rich table."""
     if args.json:
-        print(jsonlib.dumps(_list_payload(), indent=2))
+        emit("list", _list_payload())
         return 0
     table = Table(title="fm repos")
     table.add_column("name", style="bold")
@@ -81,6 +86,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return run_doctor(json_out=args.json)
 
 
+def _cmd_commands(args: argparse.Namespace) -> int:
+    """``fm commands`` — every mounted verb, from the discovery already made."""
+    from .commands import run_commands
+
+    return run_commands(args.discovery, json_out=args.json)
+
+
 def _cmd_update(args: argparse.Namespace) -> int:
     """``fm update`` — pull + delegate per cloned repo (lazy import)."""
     from .update import run_update
@@ -95,9 +107,18 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return run_setup(json_out=args.json, dry_run=args.dry_run, role=args.role)
 
 
-def _add_read_verb(sub, name: str, help_text: str, handler) -> None:
+def _help_for(name: str) -> str:
+    """The one help string for a built-in verb, read from the verb catalogue.
+
+    Read rather than repeated: ``fm --help`` and ``fm commands`` must describe a
+    verb the same way, and two copies drift the first time one is edited.
+    """
+    return next(entry.help for entry in BUILTINS if entry.name == name)
+
+
+def _add_read_verb(sub, name: str, handler) -> None:
     """Register a read verb with the shared ``--json`` flag."""
-    verb = sub.add_parser(name, help=help_text)
+    verb = sub.add_parser(name, help=_help_for(name))
     verb.add_argument(
         "--json",
         action="store_true",
@@ -111,10 +132,15 @@ def _manifest_epilog(commands: dict) -> str:
 
     Built-in help comes from argparse; the forwarding verbs and the manifest
     verbs are matched before parsing, so they are listed here — otherwise
-    ``fm --help`` would hide half the surface.
+    ``fm --help`` would hide half the surface. ``fm commands --json`` is the
+    version of this list an agent should read.
     """
     sections = ["forwarding verbs (args go straight to a repo's script):"]
-    sections.append("  install <repo> [args...]   run that repo's install.sh")
+    sections.extend(
+        f"  {FORWARDING_USAGE[entry.name]:<26} {entry.help}"
+        for entry in BUILTINS
+        if entry.forwarding
+    )
     if commands:
         sections.append("\nrepo commands (declared in each repo's fm.json):")
         sections.extend(
@@ -124,21 +150,31 @@ def _manifest_epilog(commands: dict) -> str:
     return "\n".join(sections)
 
 
-def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
+def _build_parser(commands: dict | None = None, version: str = "fm") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fm",
         description="Cross-repo CLI over First Motive repos.",
         epilog=_manifest_epilog(commands or {}),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # An agent landing cold needs one question answered before any other: which
+    # build of fm is this. Without it, the only symptom of an installed CLI that
+    # has drifted behind its checkout is a verb that quietly does not exist.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=version,
+        help="print the running version, and the checkout's when they differ",
+    )
     sub = parser.add_subparsers(dest="verb", required=True)
-    _add_read_verb(sub, "list", "list every registered fm-* repo", _cmd_list)
-    _add_read_verb(sub, "status", "cross-repo git state for cloned repos", _cmd_status)
-    _add_read_verb(sub, "doctor", "run each repo's declared health checks", _cmd_doctor)
+    _add_read_verb(sub, "list", _cmd_list)
+    _add_read_verb(sub, "status", _cmd_status)
+    _add_read_verb(sub, "doctor", _cmd_doctor)
+    _add_read_verb(sub, "commands", _cmd_commands)
 
     # update writes (pulls), so it gets its own block: --json plus a --stable
     # channel flag on top of the shared read-verb surface.
-    update = sub.add_parser("update", help="pull and delegate an update per cloned repo")
+    update = sub.add_parser("update", help=_help_for("update"))
     update.add_argument(
         "--json",
         action="store_true",
@@ -153,7 +189,7 @@ def _build_parser(commands: dict | None = None) -> argparse.ArgumentParser:
 
     # setup writes too (clones, installs), and takes --dry-run so a developer can
     # read the plan before it touches anything.
-    setup = sub.add_parser("setup", help="clone, install, and verify the whole workspace")
+    setup = sub.add_parser("setup", help=_help_for("setup"))
     setup.add_argument(
         "--json",
         action="store_true",
@@ -185,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     every usage error.
     """
     from .manifest import discover
+    from .version import version_line
     from .workspace import resolve_root
 
     argv = sys.argv[1:] if argv is None else argv
@@ -204,7 +241,10 @@ def main(argv: list[str] | None = None) -> int:
         if code is not None:
             return code
 
-    args = _build_parser(discovery.commands).parse_args(argv)
+    args = _build_parser(discovery.commands, version=version_line(root)).parse_args(argv)
+    # ``commands`` reports the discovery this invocation already made rather than
+    # scanning a second time, so what it lists is what the dispatcher would run.
+    args.discovery = discovery
     return args.func(args)
 
 

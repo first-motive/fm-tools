@@ -86,7 +86,7 @@ def test_plan_covers_every_registered_repo(tmp_path):
 
 def test_dry_run_writes_nothing(tmp_path, capsys):
     assert run_setup(json_out=True, dry_run=True, base=tmp_path) == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     plat = current_platform()
     expected = ["clone" if repo.applies_to(plat) else "skip" for repo in REPOS]
     assert [row["action"] for row in payload["steps"]] == expected
@@ -101,7 +101,7 @@ def test_dry_run_reports_a_blocked_path(tmp_path):
 def test_setup_clones_missing_repos_and_runs_installers(tmp_path, local_registry, capsys):
     workspace = tmp_path / "workspace"
     run_setup(json_out=True, base=workspace)
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
 
     cloned = {row["name"] for row in payload["steps"] if row["action"] == "clone" and row["ok"]}
     installed = {row["name"] for row in payload["steps"] if row["action"] == "install"}
@@ -120,7 +120,7 @@ def test_existing_clone_is_left_untouched(tmp_path, local_registry, capsys):
     marker.write_text("mine")
 
     run_setup(json_out=True, base=workspace)
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
 
     row = next(row for row in payload["steps"] if row["name"] == FM_ROS2.name)
     assert row["action"] == "adopt"
@@ -135,7 +135,7 @@ def test_failing_installer_fails_the_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(setup_mod, "REPOS", patched)
 
     assert run_setup(json_out=True, base=tmp_path / "workspace") == 1
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert all(not row["ok"] for row in payload["steps"] if row["action"] == "install")
 
 
@@ -144,14 +144,14 @@ def test_blocked_repo_is_never_installed(tmp_path, local_registry, capsys):
     (workspace / FM_ROS2.local_dir).mkdir(parents=True)
 
     assert run_setup(json_out=True, base=workspace) == 1
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     for_repo = [row["action"] for row in payload["steps"] if row["name"] == FM_ROS2.name]
     assert for_repo == ["blocked"]
 
 
 def test_setup_finishes_with_the_doctor_verdict(tmp_path, local_registry, capsys):
     run_setup(json_out=True, base=tmp_path / "workspace")
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert payload["doctor"]
     assert {row["level"] for row in payload["doctor"]} <= {"pass", "fail", "warn"}
 
@@ -159,7 +159,7 @@ def test_setup_finishes_with_the_doctor_verdict(tmp_path, local_registry, capsys
 def test_setup_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     assert main(["setup", "--dry-run", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["steps"]
+    assert json.loads(capsys.readouterr().out)["data"]["steps"]
 
 
 def test_setup_table_renders(tmp_path, capsys):
@@ -208,7 +208,7 @@ def test_setup_forwards_role_args_to_the_installer(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(setup_mod, "REPOS", patched)
 
     run_setup(json_out=True, base=tmp_path / "workspace", role="jetson")
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
 
     row = next(
         row
@@ -241,10 +241,10 @@ def test_role_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):
     """
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     assert main(["setup", "--dry-run", "--json", "--role", "workstation"]) == 0
-    with_role = json.loads(capsys.readouterr().out)["steps"]
+    with_role = json.loads(capsys.readouterr().out)["data"]["steps"]
 
     assert main(["setup", "--dry-run", "--json"]) == 0
-    without_role = json.loads(capsys.readouterr().out)["steps"]
+    without_role = json.loads(capsys.readouterr().out)["data"]["steps"]
 
     plat = current_platform()
     expected = ["clone" if repo.applies_to(plat) else "skip" for repo in REPOS]

@@ -192,7 +192,7 @@ def test_builtin_verb_still_wins_via_main(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
 
     assert main(["status", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["data"]
 
 
 def test_help_lists_repo_commands(tmp_path, monkeypatch, capsys):

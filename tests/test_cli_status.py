@@ -70,7 +70,7 @@ def test_no_upstream_leaves_ahead_behind_null(workspace):
 
 def test_run_status_json_is_valid_and_exits_zero(workspace, capsys):
     assert run_status(json_out=True, base=workspace, fetch=False) == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert {row["name"] for row in payload} == {repo.name for repo in REPOS}
 
 
@@ -87,4 +87,4 @@ def test_status_verb_dispatches_via_main(capsys):
 
 def test_status_json_verb_dispatches_via_main(capsys):
     assert main(["status", "--json"]) == 0
-    assert isinstance(json.loads(capsys.readouterr().out), list)
+    assert isinstance(json.loads(capsys.readouterr().out)["data"], list)

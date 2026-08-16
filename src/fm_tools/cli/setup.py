@@ -24,7 +24,6 @@ GPU workstation or a Jetson capture rig from the same registry.
 
 from __future__ import annotations
 
-import json as jsonlib
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +33,7 @@ from rich.table import Table
 
 from .doctor import gather_checks, render_checks
 from .install import run_installer
+from .payload import emit
 from .registry import REPOS, Repo, current_platform
 from .workspace import resolve_root
 
@@ -144,7 +144,7 @@ def run_setup(
     if dry_run:
         rows = gather_plan(root)
         if json_out:
-            print(jsonlib.dumps({"steps": rows, "doctor": []}, indent=2))
+            emit("setup", {"steps": rows, "doctor": []})
         else:
             _render(rows, f"fm setup (dry run) — {root}")
         return 0 if all(row["ok"] for row in rows) else 1
@@ -152,7 +152,7 @@ def run_setup(
     rows = _execute(root, role)
     checks = gather_checks(base=root)
     if json_out:
-        print(jsonlib.dumps({"steps": rows, "doctor": checks}, indent=2))
+        emit("setup", {"steps": rows, "doctor": checks})
     else:
         _render(rows, f"fm setup — {root}")
         render_checks(checks)

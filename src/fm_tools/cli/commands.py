@@ -1,0 +1,131 @@
+"""The catalogue of every verb ``fm`` answers to — and the verb that prints it.
+
+``fm --help`` is prose. It is written for a person, it is assembled from three
+different places (argparse's subparsers, a hand-written epilog, and whatever the
+repos on this machine declare), and what it says therefore changes with which
+repos happen to be cloned. An agent that scrapes it has to re-learn the surface
+on every machine, and cannot tell a verb that is missing from a verb that was
+never declared.
+
+``fm commands --json`` is the machine-readable answer: one row per verb, each
+carrying ``verb``, ``repo``, ``script``, ``help``, and ``kind``. Nothing here is
+scraped — the manifest rows come from the same :class:`~fm_tools.cli.manifest.
+Discovery` object the dispatcher routes with, so what this verb lists is exactly
+what the CLI will run.
+
+The built-in table also lives here rather than inside the argparse builder,
+because two readers need it — the parser that registers the verbs and this
+catalogue that reports them — and a second copy would let ``fm commands`` claim
+a verb the parser does not have.
+
+Three kinds are reported:
+
+- ``builtin``    — the CLI's own verbs, parsed by argparse
+- ``forwarding`` — the CLI's own verbs whose arguments belong to something else
+  (a repo's script, a remote host, a raw command line) and are therefore matched
+  before argparse ever sees them
+- ``manifest``   — whatever the repos declare in their own ``fm.json``
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from rich.console import Console
+from rich.table import Table
+
+from .manifest import Discovery
+from .payload import emit
+
+
+@dataclass(frozen=True)
+class Builtin:
+    """One verb the CLI owns itself.
+
+    ``forwarding`` marks the verbs whose remaining arguments are handed to
+    something else verbatim. They are matched by hand before argparse, for the
+    same reason manifest verbs are: argparse would claim any flag it recognises
+    before the real destination ever saw it.
+    """
+
+    name: str
+    help: str
+    forwarding: bool = False
+
+    @property
+    def kind(self) -> str:
+        return "forwarding" if self.forwarding else "builtin"
+
+
+# Every verb the CLI owns, in the order ``fm commands`` lists them. A repo
+# manifest claiming one of these names is reported as a collision and left
+# unmounted — a built-in is never shadowed.
+BUILTINS: tuple[Builtin, ...] = (
+    Builtin("list", "list every registered fm-* repo"),
+    Builtin("status", "cross-repo git state for cloned repos"),
+    Builtin("doctor", "run each repo's declared health checks"),
+    Builtin("commands", "every verb this fm answers to, for agents and CI"),
+    Builtin("update", "pull and delegate an update per cloned repo"),
+    Builtin("setup", "clone, install, and verify the whole workspace"),
+    Builtin("install", "run that repo's install.sh", forwarding=True),
+)
+
+FORWARDING_VERBS = frozenset(entry.name for entry in BUILTINS if entry.forwarding)
+BUILTIN_VERBS = frozenset(entry.name for entry in BUILTINS)
+
+# What each forwarding verb's argument line looks like, for ``fm --help``. The
+# built-in verbs get their usage from argparse; these never reach it.
+FORWARDING_USAGE: dict[str, str] = {
+    "install": "install <repo> [args...]",
+}
+
+
+def catalogue(discovery: Discovery) -> list[dict]:
+    """Every verb this ``fm`` answers to, built-ins first then manifest verbs.
+
+    ``script`` is empty for a built-in (there is no script — the CLI is the
+    implementation) and absolute for a manifest verb, so an agent can read the
+    delegate it is about to run without guessing at a checkout path.
+    """
+    rows = [
+        {
+            "verb": entry.name,
+            "repo": "fm-tools",
+            "script": "",
+            "help": entry.help,
+            "kind": entry.kind,
+        }
+        for entry in BUILTINS
+    ]
+    rows.extend(
+        {
+            "verb": name,
+            "repo": command.repo,
+            "script": str(command.script),
+            "help": command.help,
+            "kind": "manifest",
+        }
+        for name, command in sorted(discovery.commands.items())
+    )
+    return rows
+
+
+def _render_table(rows: list[dict]) -> None:
+    table = Table(title="fm commands")
+    table.add_column("verb", style="bold")
+    table.add_column("kind")
+    table.add_column("repo")
+    table.add_column("help")
+    for row in rows:
+        table.add_row(row["verb"], row["kind"], row["repo"], row["help"] or "—")
+    Console().print(table)
+
+
+def run_commands(discovery: Discovery, json_out: bool = False) -> int:
+    """``fm commands`` handler. Always exits 0 — listing a surface cannot fail."""
+    rows = catalogue(discovery)
+    if json_out:
+        emit("commands", rows)
+    else:
+        _render_table(rows)
+    return 0
