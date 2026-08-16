@@ -1,0 +1,22 @@
+{
+  "_fm_render": {
+    "artifact": "render-lock",
+    "origin": "rendered by the First Motive render plane \u2014 edit the upstream source, not this file",
+    "sha256": "289b0c86e0d09c23c35b1f370ec8c7688ee6b81bb17fcab7eba90ebc0b7396f8"
+  },
+  "artifacts": {
+    "agents-invariants": {
+      "mode": "block",
+      "path": "AGENTS.md",
+      "sha256": "2341b3e06285c5ba588cd3126694fa705e0a8c07e7cd91fd7c3f61c45ba0bc68",
+      "stamp": "html"
+    },
+    "render-check": {
+      "mode": "file",
+      "path": ".fm/render-check.py",
+      "sha256": "42eb32e6ed1b27eb08cadbf359f8bc19defb7873f202b08e1d81631bb154c9d3",
+      "stamp": "hash"
+    }
+  },
+  "source": "first-motive render plane"
+}
