@@ -19,7 +19,7 @@ def test_list_table_prints_every_repo(capsys):
 
 def test_list_json_is_valid_and_complete(capsys):
     assert main(["list", "--json"]) == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert {entry["name"] for entry in payload} == EXPECTED
     # Every entry carries the fields an agent needs to act on a repo.
     for entry in payload:

@@ -11,13 +11,13 @@ and it reads exactly the state a developer would read by hand.
 
 from __future__ import annotations
 
-import json as jsonlib
 import subprocess
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
+from .payload import emit
 from .registry import REPOS, Repo
 from .workspace import resolve_root
 
@@ -114,7 +114,7 @@ def run_status(json_out: bool = False, base: Path | None = None, fetch: bool = T
     """``fm status`` handler. Always exits 0 — reporting state is not a failure."""
     rows = gather_status(base, fetch=fetch)
     if json_out:
-        print(jsonlib.dumps(rows, indent=2))
+        emit("status", rows)
     else:
         _render_table(rows)
     return 0

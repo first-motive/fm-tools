@@ -7,7 +7,8 @@ A repo declares the workflows it wants reachable from anywhere in a top-level
       "version": 1,
       "commands": {
         "teleop": {"script": "scripts/run/teleop.sh", "help": "drive a robot"},
-        "sim":    {"script": "scripts/run/sim.sh",    "help": "launch the sim"}
+        "sim":    {"script": "scripts/run/sim.sh",    "help": "launch the sim"},
+        "flash":  {"script": "scripts/run/flash.sh",  "credentials": ["github"]}
       }
     }
 
@@ -15,6 +16,10 @@ Each entry becomes a flat ``fm`` verb (``fm teleop --robot openarm``) whose args
 are forwarded to the script verbatim — the CLI parses none of them, so the script
 stays the single source of truth for its own flags. This is the delegate-never-
 duplicate boundary: repos own behavior, ``fm`` owns discovery and routing.
+
+A command that names ``credentials`` is run with those secrets brokered into its
+environment (see :mod:`fm_tools.cli.broker`), so a script never has to take a
+token as an argument and nobody ever has to type one.
 
 Declaring verbs here rather than in the central registry means a repo adds a
 workflow without an fm-tools release, and an agent working in that repo edits
@@ -33,6 +38,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .broker import CREDENTIALS
 from .registry import REPOS, Repo
 
 MANIFEST_NAME = "fm.json"
@@ -47,6 +53,11 @@ class Command:
 
     ``script`` is absolute and already proven to sit inside ``cwd`` (the repo
     checkout), which is also the working directory the script runs in.
+
+    ``credentials`` names what the script needs brokered into its environment
+    (see :mod:`fm_tools.cli.broker`). Declared per command rather than assumed,
+    so a verb that needs no secret never causes a Keychain prompt — and a token
+    that was never fetched cannot leak.
     """
 
     name: str
@@ -54,6 +65,7 @@ class Command:
     script: Path
     cwd: Path
     help: str = ""
+    credentials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,12 +110,26 @@ def _entry_command(
     if not script.is_relative_to(checkout.resolve()):
         return None, Problem("escapes", repo.name, f"{name}: {raw} points outside the checkout")
 
+    declared = entry.get("credentials", ())
+    if not isinstance(declared, (list, tuple)) or not all(
+        isinstance(item, str) for item in declared
+    ):
+        return None, Problem("schema", repo.name, f"{name}: 'credentials' must be a list of names")
+    unknown = [item for item in declared if item not in CREDENTIALS]
+    if unknown:
+        return None, Problem(
+            "schema",
+            repo.name,
+            f"{name}: unknown credential(s) {', '.join(sorted(unknown))}",
+        )
+
     command = Command(
         name=name,
         repo=repo.name,
         script=script,
         cwd=checkout,
         help=str(entry.get("help", "")),
+        credentials=tuple(declared),
     )
     if not script.is_file():
         return command, Problem("missing", repo.name, f"{name}: {raw} does not exist")

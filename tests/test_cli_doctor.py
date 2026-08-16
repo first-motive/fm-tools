@@ -67,7 +67,7 @@ def test_run_doctor_exits_nonzero_on_failure(tmp_path, monkeypatch):
 def test_run_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
     run_doctor(json_out=True, base=tmp_path)
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["data"]
     assert payload
     for row in payload:
         assert set(row) == {"repo", "check", "kind", "level", "ok"}
@@ -83,7 +83,7 @@ def test_doctor_verb_dispatches_via_main(capsys):
 
 def test_doctor_json_verb_dispatches_via_main(capsys):
     main(["doctor", "--json"])
-    assert isinstance(json.loads(capsys.readouterr().out), list)
+    assert isinstance(json.loads(capsys.readouterr().out)["data"], list)
 
 
 def test_behind_clone_yields_a_failing_sync_row(tmp_path):

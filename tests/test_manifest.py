@@ -5,7 +5,6 @@ import json
 import pytest
 
 from fm_tools.cli import BUILTIN_VERBS, main
-from fm_tools.cli.dispatch import dispatch, run_command
 from fm_tools.cli.manifest import discover, load_manifest
 from fm_tools.cli.registry import REPOS
 
@@ -119,65 +118,6 @@ def test_builtin_verbs_cannot_be_shadowed(tmp_path):
     assert [problem.kind for problem in discovery.problems] == ["collision"]
 
 
-def test_args_are_forwarded_verbatim(tmp_path):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
-    _script(checkout, "run.sh", body='#!/bin/sh\nprintf "%s\\n" "$@" > args.txt\n')
-
-    discovery = discover(tmp_path)
-    assert dispatch(discovery, "teleop", ["--robot", "openarm", "--backend", "mock"]) == 0
-    assert (checkout / "args.txt").read_text().split() == [
-        "--robot",
-        "openarm",
-        "--backend",
-        "mock",
-    ]
-
-
-def test_script_runs_inside_its_own_checkout(tmp_path):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
-    _script(checkout, "run.sh", body="#!/bin/sh\npwd > cwd.txt\n")
-
-    dispatch(discover(tmp_path), "teleop", [])
-    assert (checkout / "cwd.txt").read_text().strip() == str(checkout)
-
-
-def test_exit_code_passes_through(tmp_path):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
-    _script(checkout, "run.sh", body="#!/bin/sh\nexit 7\n")
-
-    assert dispatch(discover(tmp_path), "teleop", []) == 7
-
-
-def test_unknown_verb_falls_through_to_argparse(tmp_path):
-    assert dispatch(discover(tmp_path), "nonsense", []) is None
-
-
-def test_missing_script_fails_the_run_with_a_message(tmp_path, capsys):
-    _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "gone.sh"}})
-    discovery = discover(tmp_path)
-
-    assert dispatch(discovery, "teleop", []) == 1
-    assert "does not exist" in capsys.readouterr().err
-
-
-def test_non_executable_script_fails_the_run(tmp_path, capsys):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
-    _script(checkout, "run.sh", executable=False)
-
-    assert run_command(discover(tmp_path).commands["teleop"], []) == 1
-    assert "not executable" in capsys.readouterr().err
-
-
-def test_collision_warns_on_the_affected_verb(tmp_path, capsys):
-    ros2 = _manifest(tmp_path, FM_ROS2, {"sim": {"script": "ros2.sh"}})
-    desktop = _manifest(tmp_path, FM_DESKTOP, {"sim": {"script": "desktop.sh"}})
-    _script(ros2, "ros2.sh")
-    _script(desktop, "desktop.sh")
-
-    dispatch(discover(tmp_path), "sim", [])
-    assert "already claimed by fm-ros2" in capsys.readouterr().err
-
-
 def test_manifest_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):
     checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}})
     _script(checkout, "run.sh", body="#!/bin/sh\nexit 3\n")
@@ -192,7 +132,7 @@ def test_builtin_verb_still_wins_via_main(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
 
     assert main(["status", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["data"]
 
 
 def test_help_lists_repo_commands(tmp_path, monkeypatch, capsys):

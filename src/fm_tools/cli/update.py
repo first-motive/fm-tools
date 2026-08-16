@@ -12,15 +12,15 @@ a stub until the stable channel is cut; today only the edge channel exists.
 
 from __future__ import annotations
 
-import json as jsonlib
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
+from . import exits
+from .payload import emit
 from .registry import REPOS, Repo
 from .workspace import resolve_root
 
@@ -116,20 +116,22 @@ def _render_table(rows: list[dict]) -> None:
 
 
 def run_update(json_out: bool = False, base: Path | None = None, stable: bool = False) -> int:
-    """``fm update`` handler. Exits non-zero when any repo fails to update.
+    """``fm update`` handler.
 
-    ``stable`` is a stub: the stable channel is not yet cut, so it errors out.
+    A repo whose pull or update script failed exits with the delegate code: the
+    verb ran several delegates and cannot return several exit codes, so it
+    reports the class and leaves the individual codes in the rows.
+
+    ``stable`` is a stub: the stable channel is not yet cut. Asking for a channel
+    that does not exist is a usage error, not a failed update.
     """
     if stable:
-        print(
-            "error: --stable channel not yet cut; track the edge channel for now",
-            file=sys.stderr,
-        )
-        return 1
+        exits.fail("--stable channel not yet cut; track the edge channel for now")
+        return exits.USAGE
 
     rows = gather_updates(base)
     if json_out:
-        print(jsonlib.dumps(rows, indent=2))
+        emit("update", rows)
     else:
         _render_table(rows)
-    return 1 if any(not row["ok"] for row in rows) else 0
+    return exits.DELEGATE if any(not row["ok"] for row in rows) else exits.OK
