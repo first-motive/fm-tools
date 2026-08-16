@@ -8,9 +8,12 @@ out to and never reimplements.
 
 Two kinds of verb share the surface:
 
-- **built-in** — ``list``, ``status``, ``doctor``, ``commands``, ``update``,
-  ``setup``, ``install``. Each takes ``--json`` (stable, versioned output for
-  agents and CI — see :mod:`fm_tools.cli.payload`) and defaults to a rich table.
+- **built-in** — the reporting verbs (``list``, ``status``, ``doctor``, ``root``,
+  ``commands``), each taking ``--json`` for stable, versioned output (see
+  :mod:`fm_tools.cli.payload`) and defaulting to a rich table; the workspace
+  verbs (``update``, ``setup``); the repo front-door verbs (``install``,
+  ``reset``, ``uninstall``); the fleet verb (``device``); and ``run``, the
+  logged escape hatch.
 - **manifest** — whatever the repos declare in their own ``fm.json``
   (see :mod:`fm_tools.cli.manifest`). ``fm teleop --robot openarm`` runs
   fm_ros2's teleop script with every argument forwarded verbatim.
@@ -245,24 +248,47 @@ def main(argv: list[str] | None = None) -> int:
     untouched; anything else goes to argparse, which owns the built-in verbs and
     every usage error.
     """
+    from . import broker
     from .manifest import discover
     from .version import version_line
     from .workspace import RootError, resolve_root
 
     argv = sys.argv[1:] if argv is None else argv
+
+    # Screened for every verb, before anything else happens. A secret typed as an
+    # argument is already in the shell history and in the process list by the
+    # time a delegate would see it, so the only useful moment to refuse it is
+    # before the command runs and before anything records that it ran.
+    refusal = broker.refuse_literal_secrets(argv)
+    if refusal is not None:
+        exits.fail(refusal)
+        return exits.USAGE
+
     try:
         root = resolve_root()
     except RootError as exc:
         # Every verb resolves repos under this root, so a root that cannot be
         # trusted makes every one of them wrong. Refusing here, once, is the
         # whole point of resolving loudly.
-        print(f"fm: {exc}", file=sys.stderr)
+        exits.fail(str(exc))
         return exits.PRECONDITION
 
-    if argv and argv[0] == "install":
-        from .install import run_install
+    # The forwarding verbs are matched before argparse for the same reason
+    # manifest verbs are: everything after them belongs to something else.
+    if argv and argv[0] in ("install", "reset", "uninstall"):
+        from .install import run_front_door
 
-        return run_install(argv[1:], root)
+        return run_front_door(argv[0], argv[1:], root)
+
+    if argv and argv[0] == "device":
+        from .device import run_device
+
+        return run_device(argv[1:])
+
+    if argv and argv[0] == "run":
+        from .bypass import run_bypass
+
+        return run_bypass(argv[1:])
 
     discovery = discover(root, reserved=BUILTIN_VERBS)
 

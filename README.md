@@ -77,7 +77,11 @@ Verbs that act, each by handing the work to a repo's own script:
 | --------------------------- | --------------------------------------------------- |
 | `fm update`                 | Fast-forwards every clean clone, then runs that repo's update script. A dirty tree is skipped, never clobbered. |
 | `fm install <repo> [args…]` | Runs that repo's `install.sh`, forwarding every argument. |
+| `fm reset <repo> [args…]` | Runs that repo's `install.sh reset` — teardown, in the repo's own words. |
+| `fm uninstall <repo> [args…]` | Runs that repo's `install.sh uninstall`. |
 | `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
+| `fm device list\|ssh\|tunnel` | The fleet: which machines exist, connecting to one, forwarding a port off one. |
+| `fm run -- <command>` | Runs a raw command and records it as a missing verb. |
 
 ```bash
 fm list                       # rich table
@@ -170,6 +174,66 @@ fm root --json      # {"root": "/home/fm/fm", "source": "card", ...}
 
 `fm` never moves a checkout — an existing layout is adopted exactly where it is.
 
+### The Fleet
+
+`fm device` treats the machines as a registry instead of as strings people
+remember. There is nothing new to maintain: the registry is the tailnet
+(`tailscale status --json` — which machines exist, and how to reach each one
+right now) plus each machine's identity card (what a machine *is*).
+
+```bash
+fm device list --json                 # every fleet machine, its role, its ssh target
+fm device ssh fm-rec-01               # connects as the account the role implies
+fm device ssh fm-rec-01 -t journalctl -u fm   # everything after the name is ssh's
+fm device tunnel fm-rec-01 9090:8080  # forward localhost:9090 to its 8080
+```
+
+No hostname, address, or account is written down in this repo. A machine's role
+comes from the `fm-<abbrev>-<nn>` shape the card's schema pins (`fm-rec-01` is a
+jetson), and the user follows the role: the provisioned machines run as the
+appliance account, while a `mac` is somebody's laptop, so its target carries no
+user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
+named the fleet way — phones, personal laptops — are left out rather than listed
+as unknowns nobody can act on.
+
+### Credentials
+
+A token is never typed. `fm` refuses a literal secret anywhere on its command
+line, for every verb, before anything runs:
+
+```console
+$ fm flash --gh-token ghp_…
+fm: refusing --gh-token on the command line — a secret typed as an argument is in
+your shell history and in this machine's process list, and neither copy can be
+revoked. Remove it: fm reads the token from `gh auth token` or the login Keychain.
+```
+
+A repo command that genuinely needs one declares it, and the broker supplies it
+through the child's environment from `gh auth token` or the login Keychain:
+
+```json
+{"flash": {"script": "scripts/run/flash.sh", "credentials": ["github"]}}
+```
+
+Only a command that declared a credential causes one to be fetched — a verb that
+needs no secret never triggers a Keychain prompt, and a token that was never
+fetched cannot leak. Nothing in `fm` prints a token, writes one to a file, or
+puts one in a report.
+
+### Bypasses
+
+`fm run -- <command>` runs a raw command exactly as typed and appends one record
+to `~/.local/state/fm/bypass.jsonl` (`$XDG_STATE_HOME` honoured):
+
+```json
+{"schema_version": 1, "when": "…", "command": ["ssh", "…"], "cwd": "…", "exit": 0}
+```
+
+Every raw command someone runs instead of a verb is a verb that does not exist
+yet, and the log is that backlog. Output is never captured, and a command line
+carrying a literal secret is refused before it runs — so nothing sensitive can
+reach the record.
+
 ### Exit Codes
 
 One contract, every verb:
@@ -183,9 +247,9 @@ One contract, every verb:
 | 4 | Delegate failure — a repo's own script ran and failed while `fm` was aggregating several of them (`fm update`, `fm setup`). |
 | 130 | Interrupted (SIGINT). |
 
-The passthrough verbs are the deliberate exception: `fm <repo verb>` and
-`fm install` each run exactly one process and return **its** exit code
-untouched, because going through `fm` must be indistinguishable from running the
+The passthrough verbs are the deliberate exception: `fm <repo verb>`,
+`fm install`, `fm reset`, `fm uninstall`, `fm device ssh`, and `fm run` each run
+exactly one process and return **its** exit code untouched, because going through `fm` must be indistinguishable from running the
 script directly. Codes 3 and 4 cover what `fm` itself detects on either side of
 that run.
 

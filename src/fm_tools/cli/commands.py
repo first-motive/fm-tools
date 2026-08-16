@@ -69,6 +69,10 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("update", "pull and delegate an update per cloned repo"),
     Builtin("setup", "clone, install, and verify the whole workspace"),
     Builtin("install", "run that repo's install.sh", forwarding=True),
+    Builtin("reset", "run that repo's install.sh reset", forwarding=True),
+    Builtin("uninstall", "run that repo's install.sh uninstall", forwarding=True),
+    Builtin("device", "the fleet: list machines, ssh to one, tunnel a port", forwarding=True),
+    Builtin("run", "run a raw command and record it as a missing verb", forwarding=True),
 )
 
 FORWARDING_VERBS = frozenset(entry.name for entry in BUILTINS if entry.forwarding)
@@ -78,6 +82,10 @@ BUILTIN_VERBS = frozenset(entry.name for entry in BUILTINS)
 # built-in verbs get their usage from argparse; these never reach it.
 FORWARDING_USAGE: dict[str, str] = {
     "install": "install <repo> [args...]",
+    "reset": "reset <repo> [args...]",
+    "uninstall": "uninstall <repo> [args...]",
+    "device": "device list|ssh|tunnel [args...]",
+    "run": "run -- <command> [args...]",
 }
 
 

@@ -1,11 +1,25 @@
-"""fm install — hand a repo's own installer the work, and nothing more.
+"""fm install / reset / uninstall — a repo's own front door, from anywhere.
 
 ``fm install fm-ros2 --native`` runs ``./install.sh --native`` inside the fm_ros2
 checkout. The CLI resolves which repo and where it lives; the repo's front door
 owns every decision about what installing means (the fm-bootstrap contract), and
 every argument reaches it untouched.
 
-The verb exists so a developer or agent never has to know where a checkout sits
+Three verbs share that door, because a machine's lifecycle has three moments and
+only one of them was reachable::
+
+    fm install <repo> [args...]     ./install.sh [args...]
+    fm reset <repo> [args...]       ./install.sh reset [args...]
+    fm uninstall <repo> [args...]   ./install.sh uninstall [args...]
+
+Teardown was being done by hand — remove a service, delete a workspace, forget a
+step, and then debug a half-installed machine that looks provisioned. The verbs
+exist so the down direction is as typeable as the up direction; what tearing down
+*means* stays in the repo, where installing already lives. A repo whose
+``install.sh`` does not implement ``reset`` says so itself, in its own words,
+with its own exit code.
+
+The verbs exist so a developer or agent never has to know where a checkout sits
 or which script it exposes — not so ``fm`` can grow install logic of its own.
 """
 
@@ -76,16 +90,20 @@ def run_installer(repo: Repo, root: Path, args: list[str] | None = None) -> int:
         return exits.INTERRUPTED
 
 
-def run_install(argv: list[str], root: Path) -> int:
-    """``fm install <repo> [args...]`` handler.
+def run_front_door(verb: str, argv: list[str], root: Path) -> int:
+    """``fm <install|reset|uninstall> <repo> [args...]`` handler.
 
     Parsed by hand rather than by argparse: everything after the repo name
     belongs to the installer, and argparse would claim any flag it recognises
     before the installer ever sees it.
+
+    ``reset`` and ``uninstall`` reach the same script with their own name as its
+    first argument, so a repo implements them as verbs of its front door rather
+    than as two more scripts the CLI has to know the paths of.
     """
     if not argv or argv[0] in ("-h", "--help"):
         names = ", ".join(repo.name for repo in REPOS)
-        print(f"usage: fm install <repo> [args...]\n\nrepos: {names}")
+        print(f"usage: fm {verb} <repo> [args...]\n\nrepos: {names}")
         return exits.OK if argv else exits.USAGE
 
     repo = find_repo(argv[0])
@@ -93,4 +111,10 @@ def run_install(argv: list[str], root: Path) -> int:
         exits.fail(f"unknown repo {argv[0]!r}; try one of: {', '.join(r.name for r in REPOS)}")
         return exits.USAGE
 
-    return run_installer(repo, root, argv[1:])
+    leading = [] if verb == "install" else [verb]
+    return run_installer(repo, root, [*leading, *argv[1:]])
+
+
+def run_install(argv: list[str], root: Path) -> int:
+    """``fm install <repo> [args...]`` handler."""
+    return run_front_door("install", argv, root)

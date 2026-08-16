@@ -3,9 +3,15 @@
 :mod:`fm_tools.cli.manifest` decides *what* a repo mounts; this module runs it.
 The contract is deliberately thin: hand every remaining argument to the repo's
 script unchanged, run it from inside its own checkout, and return its exit code.
-The CLI adds no flags, no environment, and no output of its own on the happy
-path — ``fm teleop --robot openarm`` must behave exactly like running
-``scripts/run/teleop.sh --robot openarm`` from the repo.
+The CLI adds no flags and no output of its own on the happy path — ``fm teleop
+--robot openarm`` must behave exactly like running ``scripts/run/teleop.sh
+--robot openarm`` from the repo.
+
+The one thing it does add is a credential a command explicitly asked for: a verb
+declaring ``credentials`` in its manifest entry runs with those secrets brokered
+into its environment (see :mod:`fm_tools.cli.broker`), so no script ever needs a
+token as an argument. A verb that declares none is run with the environment it
+would have had anyway.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import os
 import subprocess
 
 from . import exits
+from .broker import TokenUnavailable, environment
 from .manifest import Command, Discovery
 
 # The exit code a shell reports for a process killed by SIGINT (128 + 2). Kept
@@ -44,10 +51,21 @@ def run_command(command: Command, args: list[str]) -> int:
         )
         return exits.PRECONDITION
 
+    # Fetched only for a command that declared it, and only ever handed to the
+    # child: the value is not held, printed, or written anywhere by this module.
+    env = None
+    if command.credentials:
+        try:
+            env = environment(command.credentials)
+        except TokenUnavailable as exc:
+            exits.fail(f"{command.name}: {exc}")
+            return exits.PRECONDITION
+
     try:
         return subprocess.run(
             [str(command.script), *args],
             cwd=str(command.cwd),
+            env=env,
             check=False,
         ).returncode
     except KeyboardInterrupt:
