@@ -3,21 +3,28 @@ name: CI
 on:
   push:
     branches: ["**"]
-    paths-ignore: ["**.md", "LICENSE", "NOTICE", ".gitignore"]
+    paths-ignore: ["LICENSE", "NOTICE", ".gitignore"]
   pull_request:
-    paths-ignore: ["**.md", "LICENSE", "NOTICE", ".gitignore"]
+    paths-ignore: ["LICENSE", "NOTICE", ".gitignore"]
 
-# Pure-Python wheel: no ROS, no colcon. uv runs lint + the pytest suite, and a
-# guard asserts the package imports with no rclpy on the path.
+# Markdown is not path-ignored: AGENTS.md is a rendered artifact, and a hand-edit
+# to it must reach the drift check rather than skip CI.
 jobs:
+  # Rendered files (AGENTS.md, .fm/) come from the render plane and carry a hash
+  # of their own body. This fails the PR when one was edited in place.
+  drift:
+    uses: first-motive/.github/.github/workflows/drift-check.yml@main
+
+  # Pure-Python wheel: no ROS, no colcon. uv runs lint + the pytest suite, and a
+  # guard asserts the package imports with no rclpy on the path.
   test:
     name: lint + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Lint
         run: uv run --extra dev ruff check .
