@@ -249,9 +249,10 @@ One contract, every verb:
 
 The passthrough verbs are the deliberate exception: `fm <repo verb>`,
 `fm install`, `fm reset`, `fm uninstall`, `fm device ssh`, and `fm run` each run
-exactly one process and return **its** exit code untouched, because going through `fm` must be indistinguishable from running the
-script directly. Codes 3 and 4 cover what `fm` itself detects on either side of
-that run.
+exactly one process and return **its** exit code untouched, because going through
+`fm` must be indistinguishable from running the script directly. A process killed
+by a signal reports `128 + n`, the way a shell reports it. Codes 3 and 4 cover
+what `fm` itself detects on either side of that run.
 
 `fm status` fetches each clone by default, so its ahead/behind counts mean
 something. `fm status --no-fetch` answers from the refs already on disk — for a

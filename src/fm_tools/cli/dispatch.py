@@ -62,12 +62,13 @@ def run_command(command: Command, args: list[str]) -> int:
             return exits.PRECONDITION
 
     try:
-        return subprocess.run(
+        done = subprocess.run(
             [str(command.script), *args],
             cwd=str(command.cwd),
             env=env,
             check=False,
-        ).returncode
+        )
+        return exits.from_returncode(done.returncode)
     except KeyboardInterrupt:
         return INTERRUPTED
 

@@ -318,7 +318,7 @@ def _run(command: list[str]) -> int:
     between a refused connection and a remote command that failed.
     """
     try:
-        return subprocess.run(command, check=False).returncode
+        return exits.from_returncode(subprocess.run(command, check=False).returncode)
     except FileNotFoundError:
         exits.fail(f"{command[0]} is not on PATH")
         return exits.PRECONDITION

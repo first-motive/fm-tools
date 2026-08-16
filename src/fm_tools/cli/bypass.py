@@ -93,7 +93,7 @@ def run_bypass(argv: list[str], path: Path | None = None) -> int:
         return exits.USAGE
 
     try:
-        code = subprocess.run(command, check=False).returncode
+        code = exits.from_returncode(subprocess.run(command, check=False).returncode)
     except FileNotFoundError:
         exits.fail(f"{command[0]} is not on PATH")
         return exits.PRECONDITION

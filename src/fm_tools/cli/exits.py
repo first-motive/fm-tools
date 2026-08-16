@@ -61,3 +61,16 @@ PREFIX = "fm:"
 def fail(message: str) -> None:
     """Print one error line to stderr under the shared prefix."""
     print(f"{PREFIX} {message}", file=sys.stderr)
+
+
+def from_returncode(code: int) -> int:
+    """Turn a :mod:`subprocess` return code into the code a shell would report.
+
+    ``subprocess`` reports a child killed by a signal as the *negative* signal
+    number, while every shell reports ``128 + n``. Handing the negative value
+    back is worse than either convention: CPython takes an exit status modulo
+    256, so a script killed by SIGTERM would leave with 241 — a number that
+    means nothing to anyone. Passthrough only holds if what comes out is what a
+    caller would have seen running the script directly.
+    """
+    return 128 - code if code < 0 else code

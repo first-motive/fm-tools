@@ -81,11 +81,12 @@ def run_installer(repo: Repo, root: Path, args: list[str] | None = None) -> int:
     print(f"fm: running {installer}", file=sys.stderr)
 
     try:
-        return subprocess.run(
+        done = subprocess.run(
             [str(installer), *(args or [])],
             cwd=str(checkout),
             check=False,
-        ).returncode
+        )
+        return exits.from_returncode(done.returncode)
     except KeyboardInterrupt:
         return exits.INTERRUPTED
 
