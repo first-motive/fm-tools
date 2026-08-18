@@ -2,19 +2,31 @@
   "_fm_render": {
     "artifact": "render-lock",
     "origin": "rendered by the First Motive render plane \u2014 edit the upstream source, not this file",
-    "sha256": "289b0c86e0d09c23c35b1f370ec8c7688ee6b81bb17fcab7eba90ebc0b7396f8"
+    "sha256": "dc3e799e470710524a9fb46f4b99295bb5a326cfd87054076c2e67a5019eacc6"
   },
   "artifacts": {
     "agents-invariants": {
       "mode": "block",
-      "path": "AGENTS.md",
-      "sha256": "2341b3e06285c5ba588cd3126694fa705e0a8c07e7cd91fd7c3f61c45ba0bc68",
+      "paths": [
+        "AGENTS.md"
+      ],
+      "sha256": "ae8e770a702d661078394c75dae8593ec122d51514bc90016ef0f3b8fd8194b1",
       "stamp": "html"
+    },
+    "pre-push-hook": {
+      "mode": "file",
+      "paths": [
+        ".fm/hooks/pre-push"
+      ],
+      "sha256": "4c369c9361bb6aca99d7bfb43fa9d2b8345462bcc409c900e6c36d4123d97a94",
+      "stamp": "hash"
     },
     "render-check": {
       "mode": "file",
-      "path": ".fm/render-check.py",
-      "sha256": "42eb32e6ed1b27eb08cadbf359f8bc19defb7873f202b08e1d81631bb154c9d3",
+      "paths": [
+        ".fm/render-check.py"
+      ],
+      "sha256": "d3b89f3d4b4027bc004832465bd2b0d4f2d59801a29b3624bdf8a0c2bd7e9e47",
       "stamp": "hash"
     }
   },
