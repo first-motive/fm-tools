@@ -188,7 +188,10 @@ REPOS: tuple[Repo, ...] = (
         "fm-setup",
         entry_points=("install.sh", "run.sh"),
         platforms=("linux",),
-        release_script="scripts/dev/release-tag.sh",
+        # cut-release.sh, not release-tag.sh: the latter rewrites the tag as
+        # text in install.sh and the README and creates no git tag, so --cut
+        # gated correctly, delegated, and left no release behind (fm-tools#23).
+        release_script="scripts/dev/cut-release.sh",
         role_args=(
             RoleArgs("workstation", ("--workstation",)),
             RoleArgs("jetson", ("--jetson",)),
