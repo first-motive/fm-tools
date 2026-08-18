@@ -53,6 +53,7 @@ Reporting verbs, all read-only and all taking `--json`:
 | `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid, installed `fm` matching its checkout). Exits non-zero when any check fails, so it drops into CI. |
 | `fm commands` | Every verb this `fm` answers to — built-in, forwarding, and whatever the repos on this machine mount. The list an agent should read instead of scraping `--help`. |
 | `fm root` | The resolved workspace root and which source chose it. |
+| `fm release` | Whether each repo's default-branch tip is green enough to tag: the commit a tag would land on, and the verdict of the check runs on it. Exits non-zero when any repo is not releasable. |
 
 `fm --version` prints the running build, and names the fm-tools checkout's
 version when the two differ. That gap is worth printing: `fm` is installed from a
@@ -82,12 +83,23 @@ Verbs that act, each by handing the work to a repo's own script:
 | `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
 | `fm device list\|ssh\|tunnel` | The fleet: which machines exist, connecting to one, forwarding a port off one. |
 | `fm run -- <command>` | Runs a raw command and records it as a missing verb. |
+| `fm release --repo R --cut -- [args…]` | Runs that repo's release script, but only once CI is green on the commit a tag would land on. |
+
+Tags are where this matters most. Rigs converge on release tags, never on
+`main`, so a tag is the moment work reaches the fleet — and with no server-side
+branch protection on the private repos, it is the moment with no gate on it. The
+gate resolves the *remote's* default-branch tip rather than local `HEAD` (a
+maintainer's checkout holds whatever they were last working on), reads the check
+runs on that commit, and releases only on `green`. `pending` and `unknown` are
+refusals: a commit nothing has checked is what the gate exists to catch.
 
 ```bash
 fm list                       # rich table
 fm status --json              # machine-readable, parseable by an agent
 fm doctor                     # exits non-zero if a check fails
 fm setup --dry-run            # read the plan before anything is written
+fm release                    # is the fleet's next tag safe to cut?
+fm release --repo fm-ros2 --cut -- --minor --apply
 fm setup --role workstation   # stand up a GPU workstation
 fm setup --role jetson        # stand up a Jetson capture rig
 ```

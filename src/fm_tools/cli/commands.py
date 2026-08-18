@@ -68,6 +68,7 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("commands", "every verb this fm answers to, for agents and CI"),
     Builtin("update", "pull and delegate an update per cloned repo"),
     Builtin("setup", "clone, install, and verify the whole workspace"),
+    Builtin("release", "whether each repo's default branch is green enough to tag"),
     Builtin("install", "run that repo's install.sh", forwarding=True),
     Builtin("reset", "run that repo's install.sh reset", forwarding=True),
     Builtin("uninstall", "run that repo's install.sh uninstall", forwarding=True),
