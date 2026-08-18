@@ -96,6 +96,11 @@ class Repo:
     checkout, e.g. ``scripts/update.sh``) that ``fm update`` delegates to after a
     clean pull. Empty means the repo updates by plain pull with no delegate.
 
+    ``release_script`` names the repo-owned entry point ``fm release --cut``
+    delegates to once CI is green on the commit a tag would land on. Empty means
+    the repo has no scripted release, so ``fm release`` reports its gate and
+    refuses to cut.
+
     ``platforms`` names the platforms the repo applies to. Empty means every
     platform — the common case. A repo that names one is skipped elsewhere
     rather than cloned and failed against.
@@ -110,6 +115,7 @@ class Repo:
     entry_points: tuple[str, ...]
     checks: tuple[HealthCheck, ...] = ()
     update_script: str = ""
+    release_script: str = ""
     platforms: tuple[str, ...] = ()
     role_args: tuple[RoleArgs, ...] = ()
 
@@ -144,6 +150,7 @@ def _repo(
     entry_points: tuple[str, ...],
     tools: tuple[str, ...] = (),
     update_script: str = "",
+    release_script: str = "",
     local_dir: str = "",
     platforms: tuple[str, ...] = (),
     role_args: tuple[RoleArgs, ...] = (),
@@ -160,6 +167,7 @@ def _repo(
         entry_points=entry_points,
         checks=checks,
         update_script=update_script,
+        release_script=release_script,
         platforms=platforms,
         role_args=role_args,
     )
@@ -180,6 +188,7 @@ REPOS: tuple[Repo, ...] = (
         "fm-setup",
         entry_points=("install.sh", "run.sh"),
         platforms=("linux",),
+        release_script="scripts/dev/release-tag.sh",
         role_args=(
             RoleArgs("workstation", ("--workstation",)),
             RoleArgs("jetson", ("--jetson",)),
@@ -190,6 +199,7 @@ REPOS: tuple[Repo, ...] = (
         entry_points=("install.sh", "run.sh"),
         tools=("colcon",),
         update_script="scripts/update.sh",
+        release_script="scripts/dev/cut-release.sh",
         # The checkout is fm_ros2 (underscore) — it doubles as the ament package
         # name, which cannot carry a hyphen. The repo (and its URL) keeps the
         # hyphen, so name and directory diverge for this repo alone.

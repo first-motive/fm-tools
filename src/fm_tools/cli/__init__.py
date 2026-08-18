@@ -118,6 +118,21 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return run_setup(json_out=args.json, dry_run=args.dry_run, role=args.role)
 
 
+def _cmd_release(args: argparse.Namespace) -> int:
+    """``fm release`` — the tag gate, and the delegate behind it (lazy import)."""
+    from .release import run_release
+
+    # argparse.REMAINDER keeps the `--` separator itself; the script wants what
+    # came after it, not the marker.
+    forwarded = args.forwarded[1:] if args.forwarded[:1] == ["--"] else args.forwarded
+    return run_release(
+        json_out=args.json,
+        only=args.repo,
+        cut=args.cut,
+        forwarded=forwarded,
+    )
+
+
 def _help_for(name: str) -> str:
     """The one help string for a built-in verb, read from the verb catalogue.
 
@@ -238,6 +253,32 @@ def _build_parser(commands: dict | None = None, version: str = "fm") -> argparse
         help="what this machine is for; decides each installer's arguments",
     )
     setup.set_defaults(func=_cmd_setup)
+
+    # release reads the network for every repo and, with --cut, runs a repo's own
+    # release script. Everything after `--` belongs to that script, so it is
+    # collected rather than parsed — the same rule the forwarding verbs follow.
+    release = sub.add_parser("release", help=_help_for("release"))
+    release.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON instead of a table",
+    )
+    release.add_argument(
+        "--repo",
+        default=None,
+        help="limit the gate to one repo (required with --cut)",
+    )
+    release.add_argument(
+        "--cut",
+        action="store_true",
+        help="run the repo's release script, but only when CI is green",
+    )
+    release.add_argument(
+        "forwarded",
+        nargs=argparse.REMAINDER,
+        help="arguments passed to the repo's release script, after --",
+    )
+    release.set_defaults(func=_cmd_release)
     return parser
 
 
