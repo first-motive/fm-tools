@@ -201,3 +201,53 @@ def test_helper_scripts_are_not_flagged(tmp_path):
     _script(checkout, "scripts/run/lib-buildtree.sh")
 
     assert _rows(tmp_path, "undeclared") == []
+
+
+# --- the push guard -------------------------------------------------------
+
+
+def _guarded_clone(root, name, hook=True, hooks_path=None):
+    """A clone under ``root``, optionally carrying the hook and pointing at it."""
+    import subprocess
+
+    checkout = root / name
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+    if hook:
+        hooks = checkout / doctor.HOOKS_PATH
+        hooks.mkdir(parents=True)
+        (hooks / "pre-push").write_text("#!/usr/bin/env bash\nexit 0\n")
+    if hooks_path is not None:
+        subprocess.run(
+            ["git", "-C", str(checkout), "config", "--local", "core.hooksPath", hooks_path],
+            check=True,
+        )
+    return checkout
+
+
+def test_a_clone_pointing_at_the_hook_passes(tmp_path):
+    _guarded_clone(tmp_path, "fm_ros2", hooks_path=doctor.HOOKS_PATH)
+    rows = doctor._guard_rows(tmp_path)
+    assert [row["level"] for row in rows] == ["pass"]
+
+
+def test_a_clone_with_the_hook_but_no_hookspath_fails(tmp_path):
+    """A rendered hook git was never told to look for is a guard that is off."""
+    _guarded_clone(tmp_path, "fm_ros2")
+    rows = doctor._guard_rows(tmp_path)
+    assert [row["level"] for row in rows] == ["fail"]
+
+
+def test_a_hookspath_pointing_elsewhere_fails(tmp_path):
+    _guarded_clone(tmp_path, "fm_ros2", hooks_path=".githooks")
+    assert [row["level"] for row in doctor._guard_rows(tmp_path)] == ["fail"]
+
+
+def test_a_repo_the_plane_has_not_reached_is_not_graded(tmp_path):
+    """No rendered hook means the plane does not reach that repo yet, not a failure."""
+    _guarded_clone(tmp_path, "fm_ros2", hook=False)
+    assert doctor._guard_rows(tmp_path) == []
+
+
+def test_an_uncloned_repo_is_not_graded(tmp_path):
+    assert doctor._guard_rows(tmp_path) == []
