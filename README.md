@@ -50,7 +50,7 @@ Reporting verbs, all read-only and all taking `--json`:
 | ----------- | ------------------------------------------------------------- |
 | `fm list`   | Every registered `fm-*` repo: name, git URL, entry points.    |
 | `fm status` | Per-repo git state — branch, clean/dirty, ahead/behind. Repos not on disk are reported as `not cloned`, never faked. |
-| `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid, installed `fm` matching its checkout). Exits non-zero when any check fails, so it drops into CI. |
+| `fm doctor` | Each repo's health checks — the declared ones (clone present, tools on `PATH`) plus derived ones (clone not behind origin, command manifest valid, installed `fm` matching its checkout, push guard enabled). Exits non-zero when any check fails, so it drops into CI. |
 | `fm commands` | Every verb this `fm` answers to — built-in, forwarding, and whatever the repos on this machine mount. The list an agent should read instead of scraping `--help`. |
 | `fm root` | The resolved workspace root and which source chose it. |
 | `fm release` | Whether each repo's default-branch tip is green enough to tag: the commit a tag would land on, and the verdict of the check runs on it. Exits non-zero when any repo is not releasable. |

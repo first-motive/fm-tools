@@ -6,7 +6,7 @@ Registry check kinds, both read-only (see :mod:`fm_tools.cli.registry`):
   workspace root
 - ``tool``  — the named binary resolves on ``PATH``
 
-Four derived kinds are synthesized on top:
+Five derived kinds are synthesized on top:
 
 - ``sync``       — the clone is not behind its origin
 - ``manifest``   — the repo's ``fm.json`` parses, and every verb it declares
@@ -15,6 +15,8 @@ Four derived kinds are synthesized on top:
   the manifest never declares, so the CLI cannot reach them
 - ``version``    — the installed ``fm`` was built from the fm-tools checkout that
   is on this machine, and not from an older tag
+- ``guard``      — the clone's ``core.hooksPath`` points at the rendered
+  pre-push hook, so a direct push to the default branch is refused locally
 
 Every row carries a ``level``: ``pass``, ``fail``, or ``warn``. Only ``fail``
 moves the exit code, so ``doctor`` still drops into CI as a gate while the
@@ -75,6 +77,43 @@ def _sync_rows(base: Path) -> list[dict]:
         rows.append(
             _row(status["name"], "up to date with origin", "sync", "pass" if ok else "fail")
         )
+    return rows
+
+
+# Where the render plane puts the pre-push hook, and what core.hooksPath must
+# name for git to run it.
+HOOKS_PATH = ".fm/hooks"
+
+
+def _guard_rows(base: Path) -> list[dict]:
+    """One "push guard enabled" row per cloned repo that carries the hook.
+
+    The hook refuses a direct push to the default branch, which is the only thing
+    standing in for branch protection this org cannot buy. It is rendered into
+    the repo, but a rendered file does nothing until git is told to look for it —
+    and ``core.hooksPath`` is local config no clone carries. A repo where it is
+    unset is a repo where the guard is off, which is exactly what nobody notices
+    until the push has already happened.
+
+    A repo with no rendered hook is not graded: the plane does not reach it yet.
+    """
+    import subprocess
+
+    rows = []
+    for repo in REPOS:
+        checkout = base / repo.local_dir
+        if not (checkout / ".git").is_dir():
+            continue
+        if not (checkout / HOOKS_PATH / "pre-push").is_file():
+            continue
+        done = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--local", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        ok = done.stdout.strip() == HOOKS_PATH
+        rows.append(_row(repo.name, "push guard enabled", "guard", "pass" if ok else "fail"))
     return rows
 
 
@@ -184,6 +223,7 @@ def gather_checks(base: Path | None = None) -> list[dict]:
     rows.extend(_manifest_rows(root))
     rows.extend(_undeclared_rows(root))
     rows.extend(_version_rows(root))
+    rows.extend(_guard_rows(root))
     return rows
 
 
