@@ -76,28 +76,62 @@ def _first_line(text: str) -> str:
     return ""
 
 
+def _rows(done: subprocess.CompletedProcess) -> list[list[str]]:
+    """Split a tab-separated gh --jq result into (name, status, conclusion) rows."""
+    return [line.split("\t") for line in done.stdout.splitlines() if line.strip()]
+
+
 def _verdict(repo: Repo, sha: str) -> tuple[str, str]:
-    """Read the check runs on ``sha`` and reduce them to (verdict, detail)."""
-    done = _gh(
+    """Reduce everything that has run, or is due to run, on ``sha`` to a verdict.
+
+    Both sources are read, because neither is sufficient alone.
+
+    A workflow that is queued but has not started **creates no check runs at
+    all**. Reading only ``check-runs`` therefore cannot see it: it is absent
+    rather than pending, and a single fast unrelated workflow finishing is
+    enough to make the commit look complete. That is not hypothetical — this
+    gate called fm-ros2 green two minutes after a merge, on the strength of one
+    repo-hygiene check, while the CI deciding whether a rig should ride that
+    commit was still in the queue (#26).
+
+    Workflow runs alone are too coarse the other way: they say a workflow
+    finished, not which job failed, and the detail line is what a caller reads.
+
+    So the question asked here is "did everything that must run, pass?" rather
+    than "did anything I can see fail?".
+    """
+    slug = _slug(repo)
+    workflows = _gh(
         "api",
-        f"repos/{_slug(repo)}/commits/{sha}/check-runs",
+        f"repos/{slug}/actions/runs?head_sha={sha}&per_page=100",
+        "--jq",
+        ".workflow_runs[] | [.name, .status, (.conclusion // \"\")] | @tsv",
+    )
+    if workflows.returncode != 0:
+        return UNKNOWN, _first_line(workflows.stderr) or "gh could not read the workflow runs"
+
+    checks = _gh(
+        "api",
+        f"repos/{slug}/commits/{sha}/check-runs",
         "--jq",
         ".check_runs[] | [.name, .status, (.conclusion // \"\")] | @tsv",
     )
-    if done.returncode != 0:
-        return UNKNOWN, _first_line(done.stderr) or "gh could not read the check runs"
+    if checks.returncode != 0:
+        return UNKNOWN, _first_line(checks.stderr) or "gh could not read the check runs"
 
-    runs = [line.split("\t") for line in done.stdout.splitlines() if line.strip()]
+    runs = _rows(workflows) + _rows(checks)
     if not runs:
-        return UNKNOWN, "no check runs on this commit"
+        return UNKNOWN, "nothing has run on this commit"
 
+    # A workflow with no conclusion yet is queued or in progress. Both are
+    # "not finished", and both must hold the gate shut.
     running = [name for name, status, _ in runs if status != "completed"]
     failed = [name for name, status, conclusion in runs if status == "completed" and conclusion not in PASSING]
     if failed:
-        return RED, f"failed: {', '.join(sorted(failed))}"
+        return RED, f"failed: {', '.join(sorted(set(failed)))}"
     if running:
-        return PENDING, f"still running: {', '.join(sorted(running))}"
-    return GREEN, f"{len(runs)} check run(s) passed"
+        return PENDING, f"still running: {', '.join(sorted(set(running)))}"
+    return GREEN, f"{len(_rows(checks))} check run(s) passed"
 
 
 def gate(repo: Repo) -> dict:
