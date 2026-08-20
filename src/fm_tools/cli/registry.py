@@ -217,7 +217,15 @@ REPOS: tuple[Repo, ...] = (
     # A native macOS app: there is no Linux build to install on a workstation or
     # a Jetson, so a setup run there skips it rather than failing on it.
     _repo("fm-desktop", entry_points=("install.sh", "run.sh"), platforms=("macos",)),
-    _repo("fm-tools", entry_points=("install.sh",)),
+    _repo(
+        # The repo that owns the gate cut its own tags by hand, because it
+        # declared no script for --cut to delegate to (#23). It does now, so
+        # every repo the registry lists either has a scripted release or says
+        # plainly that it does not.
+        "fm-tools",
+        entry_points=("install.sh",),
+        release_script="scripts/dev/cut-release.sh",
+    ),
 )
 
 
