@@ -30,12 +30,15 @@ Three kinds are reported:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
 from .manifest import Discovery
 from .payload import emit
+from .registry import REPOS
+from .workspace import resolve_root
 
 
 @dataclass(frozen=True)
@@ -90,13 +93,47 @@ FORWARDING_USAGE: dict[str, str] = {
 }
 
 
-def catalogue(discovery: Discovery) -> list[dict]:
+# Built-in verbs that gate and then hand off to a script the repo owns. The verb
+# is the supported entry point; the script is what it runs. Both are reported,
+# because a caller that cannot see the delegate has no way to tell that the
+# script in front of it already has a verb — which is how a release gets cut
+# outside its own gate.
+DELEGATING: dict[str, str] = {
+    "release": "release_script",
+    "update": "update_script",
+}
+
+
+def _delegates(verb: str, root: Path) -> list[dict]:
+    """Absolute delegate scripts for one built-in verb, one row per repo.
+
+    Resolved against the workspace rather than left relative: a caller matching
+    a command line against this list has an absolute path in hand, and the
+    registry's ``local_dir`` is the only place that knows fm-ros2 clones as
+    ``fm_ros2``.
+    """
+    field = DELEGATING.get(verb)
+    if not field:
+        return []
+    return [
+        {"repo": repo.name, "script": str(root / repo.local_dir / script)}
+        for repo in REPOS
+        if (script := getattr(repo, field, ""))
+    ]
+
+
+def catalogue(discovery: Discovery, root: Path | None = None) -> list[dict]:
     """Every verb this ``fm`` answers to, built-ins first then manifest verbs.
 
-    ``script`` is empty for a built-in (there is no script — the CLI is the
-    implementation) and absolute for a manifest verb, so an agent can read the
-    delegate it is about to run without guessing at a checkout path.
+    ``script`` is empty for a built-in — the CLI is the implementation — and
+    absolute for a manifest verb, so an agent can read the delegate it is about
+    to run without guessing at a checkout path.
+
+    ``delegates`` carries the same fact for the built-ins that gate and then hand
+    off (``release``, ``update``): one absolute script per repo that declares
+    one. Every row has the key, empty where there is nothing to hand off to.
     """
+    base = root if root is not None else resolve_root()
     rows = [
         {
             "verb": entry.name,
@@ -104,6 +141,7 @@ def catalogue(discovery: Discovery) -> list[dict]:
             "script": "",
             "help": entry.help,
             "kind": entry.kind,
+            "delegates": _delegates(entry.name, base),
         }
         for entry in BUILTINS
     ]
@@ -114,6 +152,7 @@ def catalogue(discovery: Discovery) -> list[dict]:
             "script": str(command.script),
             "help": command.help,
             "kind": "manifest",
+            "delegates": [],
         }
         for name, command in sorted(discovery.commands.items())
     )
@@ -131,9 +170,9 @@ def _render_table(rows: list[dict]) -> None:
     Console().print(table)
 
 
-def run_commands(discovery: Discovery, json_out: bool = False) -> int:
+def run_commands(discovery: Discovery, json_out: bool = False, base: Path | None = None) -> int:
     """``fm commands`` handler. Always exits 0 — listing a surface cannot fail."""
-    rows = catalogue(discovery)
+    rows = catalogue(discovery, base)
     if json_out:
         emit("commands", rows)
     else:
