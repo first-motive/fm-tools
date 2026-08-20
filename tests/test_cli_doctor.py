@@ -251,3 +251,27 @@ def test_a_repo_the_plane_has_not_reached_is_not_graded(tmp_path):
 
 def test_an_uncloned_repo_is_not_graded(tmp_path):
     assert doctor._guard_rows(tmp_path) == []
+
+
+def test_a_guarded_checkout_outside_the_registry_is_graded(tmp_path):
+    """The registry names five repos; the render plane reaches far more.
+
+    A guard reported only for registry repos reads as "the guard is on" while
+    every other checkout in the workspace can still push straight to main.
+    """
+    _guarded_clone(tmp_path, "fm-teleop")
+    rows = doctor._guard_rows(tmp_path)
+    assert [(row["repo"], row["level"]) for row in rows] == [("fm-teleop", "fail")]
+
+
+def test_every_guarded_checkout_gets_a_row(tmp_path):
+    _guarded_clone(tmp_path, "fm_ros2", hooks_path=doctor.HOOKS_PATH)
+    _guarded_clone(tmp_path, "fm-data")
+    _guarded_clone(tmp_path, "unrelated", hook=False)
+
+    rows = doctor._guard_rows(tmp_path)
+
+    assert [(row["repo"], row["level"]) for row in rows] == [
+        ("fm-data", "fail"),
+        ("fm-ros2", "pass"),
+    ]
