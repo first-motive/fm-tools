@@ -28,6 +28,24 @@ jobs:
       issues: write
       pull-requests: read
 
+  # install.sh resolves its install tag from the version in pyproject.toml, and
+  # uv reuses its cached wheel when that version has not moved. A src/ change
+  # merged without a bump therefore reaches nobody while nothing fails — which
+  # is how it went unnoticed twice. This is that catch, made by machinery.
+  version:
+    name: a src change ships under a new version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The guard compares against the newest v* tag, and a shallow clone
+          # carries none — it would find nothing released and pass everything.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Version moved with src/
+        run: ./scripts/ci/check-version-bump.sh
+
   # Pure-Python wheel: no ROS, no colcon. uv runs lint + the pytest suite, and a
   # guard asserts the package imports with no rclpy on the path.
   test:
