@@ -23,10 +23,30 @@ def _done(stdout="", returncode=0, stderr=""):
     return subprocess.CompletedProcess(["gh"], returncode, stdout, stderr)
 
 
-def _stub(monkeypatch, sha="abc123def4567", runs=(), sha_fails=False, runs_fail=False):
-    """Answer both gh calls the gate makes: resolve the sha, then read its checks."""
+def _stub(
+    monkeypatch,
+    sha="abc123def4567",
+    runs=(),
+    workflows=None,
+    sha_fails=False,
+    runs_fail=False,
+    workflows_fail=False,
+):
+    """Answer the three gh calls the gate makes: the sha, its workflow runs, its checks.
+
+    ``workflows`` defaults to mirroring ``runs``: for most cases the workflow and
+    its jobs agree, and a test that says "the checks are green" means the commit
+    is green. The cases where they disagree — a queued workflow that has produced
+    no check runs yet — pass it explicitly, because that disagreement is the
+    whole of #26.
+    """
+    wf_rows = runs if workflows is None else workflows
 
     def fake_gh(*args):
+        if "actions/runs" in args[1]:
+            if workflows_fail:
+                return _done(returncode=1, stderr="HTTP 404")
+            return _done("\n".join("\t".join(row) for row in wf_rows))
         if "check-runs" in args[1]:
             if runs_fail:
                 return _done(returncode=1, stderr="HTTP 404")
@@ -230,3 +250,82 @@ def test_this_repo_ships_the_release_script_it_declares():
     script = Path(__file__).resolve().parent.parent / fm_tools.release_script
     assert script.is_file(), f"{fm_tools.release_script} is declared but missing"
     assert os.access(script, os.X_OK), f"{fm_tools.release_script} is not executable"
+
+
+# --- #26: a workflow that has not started produces no check runs -----------
+#
+# This is the reproduction. Two minutes after a merge, fm-ros2's `ci.yml` was
+# queued and had created nothing, while repo-hygiene's `scan` had finished. The
+# gate saw one passing check, no failures, and called the commit green — a tag
+# cut on that verdict would have shipped the fleet a commit whose CI never ran.
+
+
+def test_a_queued_workflow_holds_the_gate_shut(monkeypatch):
+    _stub(
+        monkeypatch,
+        runs=[("scan", "completed", "success")],
+        workflows=[("repo-hygiene", "completed", "success"), ("CI", "queued", "")],
+    )
+    row = gate(REPO)
+    assert row["verdict"] == PENDING, "a queued workflow was reported as green"
+    assert row["releasable"] is False
+    assert "CI" in row["detail"]
+
+
+def test_an_in_progress_workflow_holds_the_gate_shut(monkeypatch):
+    _stub(
+        monkeypatch,
+        runs=[("scan", "completed", "success")],
+        workflows=[("CI", "in_progress", "")],
+    )
+    assert gate(REPO)["verdict"] == PENDING
+
+
+def test_a_failed_workflow_is_red_even_when_every_check_passed(monkeypatch):
+    """A workflow can fail outside any job — a bad matrix, a setup step, a
+    cancelled run. The checks that did report would all be green."""
+    _stub(
+        monkeypatch,
+        runs=[("scan", "completed", "success")],
+        workflows=[("CI", "completed", "failure")],
+    )
+    row = gate(REPO)
+    assert row["verdict"] == RED
+    assert "CI" in row["detail"]
+
+
+def test_a_commit_nothing_has_run_on_is_unknown_not_green(monkeypatch):
+    _stub(monkeypatch, runs=[], workflows=[])
+    row = gate(REPO)
+    assert row["verdict"] == UNKNOWN
+    assert row["releasable"] is False
+    assert "nothing has run" in row["detail"]
+
+
+def test_green_needs_both_sources_complete(monkeypatch):
+    _stub(
+        monkeypatch,
+        runs=[("build", "completed", "success"), ("lint", "completed", "success")],
+        workflows=[("CI", "completed", "success")],
+    )
+    row = gate(REPO)
+    assert row["verdict"] == GREEN
+    # The count reported stays the check-run count: it is what a caller reads to
+    # judge whether the commit was actually exercised, and counting the workflow
+    # alongside its own jobs would inflate it.
+    assert row["detail"] == "2 check run(s) passed"
+
+
+def test_an_unreadable_workflow_list_is_unknown_not_green(monkeypatch):
+    """Failing open on an API error would green every commit during an outage."""
+    _stub(monkeypatch, runs=[("build", "completed", "success")], workflows_fail=True)
+    assert gate(REPO)["verdict"] == UNKNOWN
+
+
+def test_a_name_running_in_both_sources_is_reported_once(monkeypatch):
+    _stub(
+        monkeypatch,
+        runs=[("CI", "in_progress", "")],
+        workflows=[("CI", "in_progress", "")],
+    )
+    assert gate(REPO)["detail"] == "still running: CI"
