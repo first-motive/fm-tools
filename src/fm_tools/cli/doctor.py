@@ -15,8 +15,11 @@ Five derived kinds are synthesized on top:
   the manifest never declares, so the CLI cannot reach them
 - ``version``    — the installed ``fm`` was built from the fm-tools checkout that
   is on this machine, and not from an older tag
-- ``guard``      — the clone's ``core.hooksPath`` points at the rendered
-  pre-push hook, so a direct push to the default branch is refused locally
+- ``guard``      — every checkout under the workspace root carrying the rendered
+  pre-push hook points ``core.hooksPath`` at it, so a direct push to the default
+  branch is refused locally. Graded per checkout found on disk, not per registry
+  entry: the registry names five repos and a workspace holds every repo the
+  render plane reaches
 
 Every row carries a ``level``: ``pass``, ``fail``, or ``warn``. Only ``fail``
 moves the exit code, so ``doctor`` still drops into CI as a gate while the
@@ -86,7 +89,7 @@ HOOKS_PATH = ".fm/hooks"
 
 
 def _guard_rows(base: Path) -> list[dict]:
-    """One "push guard enabled" row per cloned repo that carries the hook.
+    """One "push guard enabled" row per guarded checkout under the workspace root.
 
     The hook refuses a direct push to the default branch, which is the only thing
     standing in for branch protection this org cannot buy. It is rendered into
@@ -95,17 +98,35 @@ def _guard_rows(base: Path) -> list[dict]:
     unset is a repo where the guard is off, which is exactly what nobody notices
     until the push has already happened.
 
-    A repo with no rendered hook is not graded: the plane does not reach it yet.
+    The checkouts come from the workspace root, not the registry. The registry
+    names five repos; a workspace holds every repo the render plane reaches, and
+    a guard reported for five of fifteen reads as "the guard is on" while ten
+    checkouts nobody looked at could push straight to main. What identifies a
+    checkout to grade is the rendered hook itself, which is why the scan tests
+    for it rather than for a name it knows.
+
+    A directory with no rendered hook is not graded: either the plane does not
+    reach that repo yet, or it is not one of ours.
     """
     import subprocess
 
+    known = {repo.local_dir: repo.name for repo in REPOS}
+    try:
+        candidates = sorted(base.iterdir())
+    except OSError:
+        # An unreadable or missing root has nothing to grade, and doctor's other
+        # rows already report a root that is wrong.
+        return []
+
     rows = []
-    for repo in REPOS:
-        checkout = base / repo.local_dir
-        if not (checkout / ".git").is_dir():
+    for checkout in candidates:
+        # A worktree's .git is a file, not a directory; both are checkouts that
+        # can push.
+        if not (checkout / ".git").exists():
             continue
         if not (checkout / HOOKS_PATH / "pre-push").is_file():
             continue
+        name = known.get(checkout.name, checkout.name)
         done = subprocess.run(
             ["git", "-C", str(checkout), "config", "--local", "--get", "core.hooksPath"],
             capture_output=True,
@@ -113,7 +134,7 @@ def _guard_rows(base: Path) -> list[dict]:
             check=False,
         )
         ok = done.stdout.strip() == HOOKS_PATH
-        rows.append(_row(repo.name, "push guard enabled", "guard", "pass" if ok else "fail"))
+        rows.append(_row(name, "push guard enabled", "guard", "pass" if ok else "fail"))
     return rows
 
 
