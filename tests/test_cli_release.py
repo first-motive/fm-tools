@@ -6,6 +6,8 @@ verdict, and a test that reached GitHub would be measuring the network.
 
 import json
 import subprocess
+import os
+from pathlib import Path
 
 import pytest
 
@@ -191,7 +193,11 @@ RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
 # refuses on each of these with a message telling the caller to cut the tag in
 # the repo; adding a repo makes this test fail until someone decides which side
 # of the line it is on.
-NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop", "fm-tools"}
+#
+# fm-tools left this set when it got its own cut-release.sh: the repo that owns
+# the gate was cutting its tags by hand, which is the half of #23 that outlived
+# the fm-setup fix.
+NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop"}
 
 
 def test_a_declared_release_script_is_the_one_that_cuts_a_tag():
@@ -213,3 +219,14 @@ def test_every_repo_declares_whether_it_has_a_scripted_release():
 def test_fm_setup_delegates_to_a_script_that_tags():
     fm_setup = next(repo for repo in REPOS if repo.name == "fm-setup")
     assert fm_setup.release_script == RELEASE_ENTRY_POINT
+
+
+def test_this_repo_ships_the_release_script_it_declares():
+    """A registry entry pointing at a script that is not there fails at the
+    moment of release, which is the worst moment to find out. Only fm-tools'
+    own entry can be checked from here — the others live in their own repos."""
+    fm_tools = next(repo for repo in REPOS if repo.name == "fm-tools")
+    assert fm_tools.release_script, "fm-tools declares no release script"
+    script = Path(__file__).resolve().parent.parent / fm_tools.release_script
+    assert script.is_file(), f"{fm_tools.release_script} is declared but missing"
+    assert os.access(script, os.X_OK), f"{fm_tools.release_script} is not executable"
