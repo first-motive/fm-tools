@@ -3,6 +3,7 @@
 import json
 
 from fm_tools.cli import BUILTIN_VERBS, main
+from pathlib import Path
 from fm_tools.cli.commands import catalogue
 from fm_tools.cli.manifest import discover
 from fm_tools.cli.registry import REPOS
@@ -32,7 +33,7 @@ def test_catalogue_lists_mounted_manifest_verbs(tmp_path):
     checkout = _mounted(
         tmp_path, {"teleop": {"script": "scripts/run/teleop.sh", "help": "drive a robot"}}
     )
-    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS))
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
     teleop = next(row for row in rows if row["verb"] == "teleop")
     assert teleop == {
         "verb": "teleop",
@@ -40,13 +41,15 @@ def test_catalogue_lists_mounted_manifest_verbs(tmp_path):
         "script": str(checkout / "scripts" / "run" / "teleop.sh"),
         "help": "drive a robot",
         "kind": "manifest",
+        # A manifest verb IS the script, so it hands off to nothing further.
+        "delegates": [],
     }
 
 
 def test_every_row_carries_the_documented_fields(tmp_path):
     _mounted(tmp_path, {"sim": {"script": "scripts/run/sim.sh", "help": "launch the sim"}})
-    for row in catalogue(discover(tmp_path, reserved=BUILTIN_VERBS)):
-        assert set(row) == {"verb", "repo", "script", "help", "kind"}
+    for row in catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path):
+        assert set(row) == {"verb", "repo", "script", "help", "kind", "delegates"}
         assert row["kind"] in {"builtin", "forwarding", "manifest"}
 
 
@@ -78,3 +81,45 @@ def test_a_mounted_noun_is_listed_like_any_other_verb(tmp_path, monkeypatch, cap
     assert main(["commands", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
     assert next(row for row in rows if row["verb"] == "machine")["kind"] == "manifest"
+
+
+# `release` and `update` gate and then hand off to a script the repo owns. The
+# verb is the supported entry point; the script is what it runs. A caller that
+# cannot see the delegate has no way to tell that the script in front of it
+# already has a verb — which is how a release gets cut outside its own gate
+# (fm-tools#23, and again by hand while cutting the train after it).
+
+
+def test_a_delegating_builtin_reports_the_scripts_it_hands_off_to(tmp_path):
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
+    release = next(row for row in rows if row["verb"] == "release")
+    scripts = [entry["script"] for entry in release["delegates"]]
+    assert scripts, "release declares no delegates"
+    for repo in REPOS:
+        if repo.release_script:
+            expected = str(tmp_path / repo.local_dir / repo.release_script)
+            assert expected in scripts, f"{repo.name}'s release script is not reported"
+
+
+def test_delegates_are_absolute_and_land_in_the_workspace(tmp_path):
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
+    for row in rows:
+        for entry in row["delegates"]:
+            path = Path(entry["script"])
+            assert path.is_absolute(), f"{row['verb']} delegate is relative: {path}"
+            assert path.is_relative_to(tmp_path), f"{row['verb']} delegate escapes the workspace"
+
+
+def test_every_row_carries_the_key_so_a_reader_never_guesses(tmp_path):
+    """A missing key and an empty list read the same to a careless caller, and
+    only one of them is a fact. Every row states its delegates, even as []."""
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
+    assert rows
+    for row in rows:
+        assert isinstance(row["delegates"], list)
+
+
+def test_a_non_delegating_builtin_reports_none(tmp_path):
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
+    listing = next(row for row in rows if row["verb"] == "list")
+    assert listing["delegates"] == []
