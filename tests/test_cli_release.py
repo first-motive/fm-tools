@@ -175,3 +175,41 @@ def test_the_delegates_exit_code_is_passed_through(monkeypatch, tmp_path):
 
     _stub(monkeypatch, runs=[("build", "completed", "success")])
     assert run_release(only="fm-ros2", cut=True, base=tmp_path) == 7
+
+
+# The registry is where a repo's release becomes a promise the CLI makes, so the
+# two facts worth holding here are which repos make it and what they point at.
+# fm-setup pointed at release-tag.sh, which rewrites the tag as text in install.sh
+# and the README and creates no git tag at all — so `fm release --cut` gated,
+# delegated, reported success, and left no release behind (fm-tools#23). Nothing
+# in a unit test can run those scripts, but the shape they are named by is
+# checkable, and it is the part that was wrong.
+
+RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
+
+# Repos with no scripted release, stated rather than implied. `fm release --cut`
+# refuses on each of these with a message telling the caller to cut the tag in
+# the repo; adding a repo makes this test fail until someone decides which side
+# of the line it is on.
+NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop", "fm-tools"}
+
+
+def test_a_declared_release_script_is_the_one_that_cuts_a_tag():
+    for repo in REPOS:
+        if repo.release_script:
+            assert repo.release_script == RELEASE_ENTRY_POINT, (
+                f"{repo.name} delegates --cut to {repo.release_script}; a scripted "
+                f"release is {RELEASE_ENTRY_POINT} in every repo that has one"
+            )
+
+
+def test_every_repo_declares_whether_it_has_a_scripted_release():
+    scripted = {repo.name for repo in REPOS if repo.release_script}
+    unscripted = {repo.name for repo in REPOS if not repo.release_script}
+    assert unscripted == NO_SCRIPTED_RELEASE
+    assert not scripted & NO_SCRIPTED_RELEASE
+
+
+def test_fm_setup_delegates_to_a_script_that_tags():
+    fm_setup = next(repo for repo in REPOS if repo.name == "fm-setup")
+    assert fm_setup.release_script == RELEASE_ENTRY_POINT
