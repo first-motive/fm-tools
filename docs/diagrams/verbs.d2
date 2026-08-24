@@ -1,0 +1,22 @@
+# The fm verb model. One surface, three kinds of verb, and one boundary: fm
+# reports on the workspace itself, and every verb that *acts* hands the work to
+# the script the owning repo already ships. Duplicating that logic here is how
+# the CLI and the repo start disagreeing about what "install" means.
+...@styles
+direction: right
+
+cli: "fm\nnoun-verb surface, --json on everything" { class: node }
+
+reporting: "reporting — read-only\nlist · status · doctor · commands · root · release" { class: art }
+acting: "acting\nupdate · install · reset · uninstall · setup · device · run" { class: art }
+mounted: "mounted\nwhatever each repo declares in its fm.json" { class: art }
+
+state: "the workspace itself\ngit state, manifests, PATH, the fleet" { class: pkg }
+scripts: "the repo's own script\ninstall.sh · update · release" { class: pkg }
+
+cli -> reporting
+cli -> acting
+cli -> mounted
+reporting -> state: reads, never writes
+acting -> scripts: hands the work over
+mounted -> scripts
