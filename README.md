@@ -44,6 +44,11 @@ backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)
 machine-readable surface for developers and AI agents landing cold. It ships as a
 console entry point with the wheel.
 
+![fm verb model](docs/diagrams/verbs.svg)
+
+Source: [`docs/diagrams/verbs.d2`](docs/diagrams/verbs.d2) — re-render with
+[`docs/diagrams/render.sh`](docs/diagrams/render.sh).
+
 Reporting verbs, all read-only and all taking `--json`:
 
 | Verb        | Reports                                                        |
