@@ -72,7 +72,7 @@ set_version() {  # version
   mv "$tmp" pyproject.toml
   git add pyproject.toml
   git commit -q -m "chore: bump version to $version"
-  ok "bump committed on $branch — open a pull request, then re-run with --apply"
+  ok "bump committed on $branch — open a pull request, then re-run with: fm release --repo fm-tools --cut -- --apply"
 }
 
 main() {
@@ -117,7 +117,7 @@ main() {
 
   if [ "$apply" = 0 ]; then
     log "plan: tag $tag at main ${tip:0:7}"
-    printf '    re-run with --apply to create and push it\n'
+    printf '    re-run with `fm release --repo <repo> --cut -- --apply` to create and push it\n'
     return 0
   fi
 
