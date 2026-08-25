@@ -92,8 +92,9 @@ Verbs that act, each by handing the work to a repo's own script:
 | `fm release --repo R --cut -- [args…]` | Runs that repo's release script, but only once CI is green on the commit a tag would land on. |
 
 Tags are where this matters most. Rigs converge on release tags, never on
-`main`, so a tag is the moment work reaches the fleet — and with no server-side
-branch protection on the private repos, it is the moment with no gate on it. The
+`main`, so a tag is the moment work reaches the fleet — and on the repos that
+are still private, where the free plan gives no server-side branch protection,
+it is the moment with no gate on it. The
 gate resolves the *remote's* default-branch tip rather than local `HEAD` (a
 maintainer's checkout holds whatever they were last working on), reads the check
 runs on that commit, and releases only on `green`. `pending` and `unknown` are
