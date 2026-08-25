@@ -105,6 +105,14 @@ def test_unknown_verb_is_a_usage_error(workspace, capsys):
     assert "unknown diagram verb" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("argv", [["--repo"], ["--repo="], ["--repo", "--dry-run"]])
+def test_a_bare_repo_flag_is_refused_not_widened(workspace, capsys, argv):
+    # Reading a valueless --repo as "no filter" would render every repo the
+    # caller meant to narrow to one.
+    assert main(["diagram", "render", *argv]) == exits.USAGE
+    assert "--repo needs a value" in capsys.readouterr().err
+
+
 def test_a_workspace_with_no_diagram_repo_is_a_precondition_failure(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     assert main(["diagram", "list"]) == exits.PRECONDITION

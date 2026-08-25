@@ -231,14 +231,27 @@ Repos are discovered by the rendered docs/diagrams/render.sh, so a repo joins
 this view by adopting the render plane's artifact."""
 
 
+class UsageError(ValueError):
+    """An argument shape the verb refuses rather than reinterprets."""
+
+
 def _flag_value(argv: list[str], flag: str) -> tuple[str, list[str]]:
-    """Pull ``--flag value`` or ``--flag=value`` out of an argument list."""
+    """Pull ``--flag value`` or ``--flag=value`` out of an argument list.
+
+    A bare trailing ``--flag`` is a usage error, not an absent flag: reading it
+    as "no value" would silently widen ``--repo`` to every repo.
+    """
     rest = list(argv)
     for index, arg in enumerate(rest):
-        if arg == flag and index + 1 < len(rest):
+        if arg == flag:
+            if index + 1 >= len(rest) or rest[index + 1].startswith("-"):
+                raise UsageError(f"{flag} needs a value")
             return rest[index + 1], rest[:index] + rest[index + 2 :]
         if arg.startswith(f"{flag}="):
-            return arg.split("=", 1)[1], rest[:index] + rest[index + 1 :]
+            value = arg.split("=", 1)[1]
+            if not value:
+                raise UsageError(f"{flag} needs a value")
+            return value, rest[:index] + rest[index + 1 :]
     return "", rest
 
 
@@ -254,7 +267,11 @@ def run_diagram(argv: list[str], root: Path) -> int:
         exits.fail(f"unknown diagram verb {verb!r} (use list|render|check|watch)")
         return exits.USAGE
 
-    only, rest = _flag_value(rest, "--repo")
+    try:
+        only, rest = _flag_value(rest, "--repo")
+    except UsageError as error:
+        exits.fail(str(error))
+        return exits.USAGE
     dry_run = "--dry-run" in rest
     rest = [arg for arg in rest if arg != "--dry-run"]
 
