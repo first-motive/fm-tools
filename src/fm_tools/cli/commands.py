@@ -76,6 +76,7 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("reset", "run that repo's install.sh reset", forwarding=True),
     Builtin("uninstall", "run that repo's install.sh uninstall", forwarding=True),
     Builtin("device", "the fleet: list machines, ssh to one, tunnel a port", forwarding=True),
+    Builtin("diagram", "every diagram in the workspace: list, render, check, watch", forwarding=True),
     Builtin("run", "run a raw command and record it as a missing verb", forwarding=True),
 )
 
@@ -89,6 +90,7 @@ FORWARDING_USAGE: dict[str, str] = {
     "reset": "reset <repo> [args...]",
     "uninstall": "uninstall <repo> [args...]",
     "device": "device list|ssh|tunnel [args...]",
+    "diagram": "diagram list|render|check|watch",
     "run": "run -- <command> [args...]",
 }
 

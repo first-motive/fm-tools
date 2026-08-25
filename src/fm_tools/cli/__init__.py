@@ -12,8 +12,8 @@ Two kinds of verb share the surface:
   ``commands``), each taking ``--json`` for stable, versioned output (see
   :mod:`fm_tools.cli.payload`) and defaulting to a rich table; the workspace
   verbs (``update``, ``setup``); the repo front-door verbs (``install``,
-  ``reset``, ``uninstall``); the fleet verb (``device``); and ``run``, the
-  logged escape hatch.
+  ``reset``, ``uninstall``); the fleet verb (``device``); the
+  workspace-wide ``diagram`` verb; and ``run``, the logged escape hatch.
 - **manifest** — whatever the repos declare in their own ``fm.json``
   (see :mod:`fm_tools.cli.manifest`). ``fm teleop --robot openarm`` runs
   fm_ros2's teleop script with every argument forwarded verbatim.
@@ -325,6 +325,11 @@ def main(argv: list[str] | None = None) -> int:
         from .device import run_device
 
         return run_device(argv[1:])
+
+    if argv and argv[0] == "diagram":
+        from .diagram import run_diagram
+
+        return run_diagram(argv[1:], root)
 
     if argv and argv[0] == "run":
         from .bypass import run_bypass
