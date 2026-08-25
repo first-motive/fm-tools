@@ -87,6 +87,7 @@ Verbs that act, each by handing the work to a repo's own script:
 | `fm uninstall <repo> [args…]` | Runs that repo's `install.sh uninstall`. |
 | `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
 | `fm device list\|ssh\|tunnel` | The fleet: which machines exist, connecting to one, forwarding a port off one. |
+| `fm diagram list\|render\|check\|watch` | Every diagram in the workspace, and the per-repo renderer behind each one. |
 | `fm run -- <command>` | Runs a raw command and records it as a missing verb. |
 | `fm release --repo R --cut -- [args…]` | Runs that repo's release script, but only once CI is green on the commit a tag would land on. |
 
@@ -190,6 +191,26 @@ fm root --json      # {"root": "/home/fm/fm", "source": "card", ...}
 ```
 
 `fm` never moves a checkout — an existing layout is adopted exactly where it is.
+
+### The Diagrams
+
+Each repo renders its own diagrams and CI fails on a committed SVG that drifted
+from its source. What no repo could answer is what the workspace holds *in
+total*, which is the question anyone building a picture of the system asks first.
+
+```bash
+fm diagram list --json                # every .d2 in the workspace, and its render
+fm diagram render --repo fm-data      # re-render, through that repo's render.sh
+fm diagram check                      # the drift gate CI runs, across every repo
+fm diagram watch                      # re-render on save while you edit (fswatch)
+```
+
+A repo joins this view by carrying the rendered `docs/diagrams/render.sh`, so
+nothing here names repos. `render` and `check` delegate to that script rather
+than re-implementing it: the command a developer runs and the command CI runs
+have to be the same one, or a green check proves nothing. `list --json` is the
+manifest First Motive Desktop's diagram surface reads, so a diagram added in any
+repo appears in the app with no change to the app.
 
 ### The Fleet
 
