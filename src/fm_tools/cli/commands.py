@@ -75,7 +75,7 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("install", "run that repo's install.sh", forwarding=True),
     Builtin("reset", "run that repo's install.sh reset", forwarding=True),
     Builtin("uninstall", "run that repo's install.sh uninstall", forwarding=True),
-    Builtin("device", "the fleet: list machines, ssh to one, tunnel a port", forwarding=True),
+    Builtin("device", "the fleet: list, ssh, tunnel, adopt a robot", forwarding=True),
     Builtin("diagram", "every diagram in the workspace: list, render, check, watch", forwarding=True),
     Builtin("run", "run a raw command and record it as a missing verb", forwarding=True),
 )

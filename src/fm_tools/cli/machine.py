@@ -38,10 +38,17 @@ from pathlib import Path
 # fm-setup's FM_MACHINE_SCHEMA_VERSION when a field changes meaning.
 SCHEMA_VERSION = 1
 
-# Roles a card may declare, mirroring the schema's enum. `mac` is provisioned by
-# neither install role — it is here because a laptop still needs an identity to
-# point at a workspace and pick a transport.
-ROLES = ("workstation", "jetson", "mac")
+# Roles a card may declare, mirroring the schema's enum. `mac` and `robot` are
+# provisioned by neither install role — a laptop still needs an identity to point
+# at a workspace and pick a transport, and a robot arrives on its vendor's own OS
+# and is adopted (`fm device adopt`) rather than flashed.
+ROLES = ("workstation", "jetson", "mac", "robot")
+
+# Which robot a `robot` card may say it is, mirroring the schema's enum. The
+# field exists because `role` cannot answer it: an Anvil workcell and an Axol are
+# both robots and share not one interface, and every reader downstream — the
+# comms bridge profile, the agent's adapter — is chosen from this value.
+ROBOT_KINDS = ("anvil-openarm-v2", "axol")
 
 # fm-<abbrev>-<nn>, the schema's own pattern. The trailing number is what lets
 # two recorders share a LAN, and the shape is enforced on read because the name
@@ -74,6 +81,9 @@ class Card:
     transport: str
     workspace: Path
     path: Path
+    # Empty on every card but a robot's, which is the same shape of answer
+    # `workload` gives: absence is a valid state, not a missing field.
+    robot: str = ""
 
     @property
     def namespace(self) -> str:
@@ -142,6 +152,9 @@ def read_card(path: Path | None = None) -> Card | None:
     name = data["name"]
     if not isinstance(name, str) or not NAME_PATTERN.match(name):
         raise CardError(f"{path}: name {name!r} is not shaped fm-<abbrev>-<nn>")
+    robot = data.get("robot", "")
+    if robot and robot not in ROBOT_KINDS:
+        raise CardError(f"{path}: unknown robot {robot!r}; expected one of {ROBOT_KINDS}")
 
     return Card(
         name=name,
@@ -150,4 +163,5 @@ def read_card(path: Path | None = None) -> Card | None:
         transport=str(data["transport"]),
         workspace=Path(workspace),
         path=path,
+        robot=str(robot),
     )
