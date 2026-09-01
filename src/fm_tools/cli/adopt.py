@@ -330,7 +330,8 @@ def _endpoint_step(ref: str = "", router: str = "") -> Step:
         name="fm-comms-endpoint",
         summary="place the fleet env file (no bridge: this robot has no DDS graph)",
         script=f"""
-{_router_export(router)}curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role endpoint
+{_router_export(router)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
+curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role endpoint
 """.strip(),
     )
 
@@ -341,19 +342,31 @@ def _bridge_step(ref: str = "", router: str = "") -> Step:
         summary="install the zenoh bridge for this robot's profile",
         packages=("zenoh-bridge-ros2dds",),
         script=f"""
-{_router_export(router)}curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role bridge
+{_router_export(router)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
+curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role bridge
 {_ledger("fm-comms", ("zenoh-bridge-ros2dds",))}
 """.strip(),
     )
 
 
 def _agent_step(kind: str, ref: str = "") -> Step:
+    """Install the agent from a checkout, not through a pipe.
+
+    Its installer renders a systemd unit from a template beside itself and reads
+    the host's identity card, so it needs the repo on disk. Cloning first is also
+    what the other two checkout steps do, and it leaves the source on the robot
+    where an operator debugging the unit can read the code the unit runs.
+    """
     role = "anvil" if is_anvil(kind) else "axol"
     return Step(
         name="fm-robot-agent",
+        # No packages declared: git arrived with the fm-tools step and is
+        # ledgered there. Recording it twice would have one step's uninstall
+        # remove what another still needs.
         summary=f"install the {role} robot agent and its service",
         script=f"""
-curl -fsSL {RAW_BASE}/fm-robot-agent/{ref_for("fm-robot-agent", ref)}/install.sh | bash -s -- --role {role}
+{_checkout("fm-robot-agent", ref)}
+{WORKSPACE}/fm-robot-agent/install.sh --role {role}
 """.strip(),
     )
 

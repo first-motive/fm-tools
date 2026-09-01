@@ -410,3 +410,30 @@ def test_a_rerun_turns_tailscale_ssh_off_rather_than_leaving_it():
     """A robot an earlier run enabled it on must converge, not stay as it was."""
     step = adopt.plan("axol")[0]
     assert "tailscale set --ssh=false" in step.script
+
+
+# --- every repo is fetched at the ref adopt pinned ----------------------------
+
+
+def test_fm_comms_is_handed_its_own_tag():
+    """Its install.sh re-clones itself at FM_TAG, defaulting to a release we have not cut."""
+    for kind in ("anvil-openarm-v2", "axol"):
+        step = next(s for s in adopt.plan(kind) if s.name.startswith("fm-comms"))
+        assert f"export FM_TAG={adopt.REFS['fm-comms']}" in step.script
+
+
+def test_the_agent_is_installed_from_a_checkout_not_a_pipe():
+    """Its installer renders a unit from a template beside itself; a pipe has none."""
+    step = next(s for s in adopt.plan("axol") if s.name == "fm-robot-agent")
+    assert "git clone" in step.script
+    assert "| bash" not in step.script
+    assert "fm-robot-agent/install.sh --role axol" in step.script
+
+
+def test_the_agent_checkout_honours_an_override():
+    step = next(
+        s for s in adopt.plan("axol", ref="feat/robots-as-devices")
+        if s.name == "fm-robot-agent"
+    )
+    assert "feat/robots-as-devices" in step.script
+    assert adopt.REFS["fm-robot-agent"] not in step.script
