@@ -398,3 +398,15 @@ def test_an_override_reaches_the_wheel_too():
     )
     assert "export FM_TOOLS_REF=feat/robots-as-devices" in step.script
     assert adopt.REFS["fm-tools"] not in step.script
+
+
+def test_joining_the_tailnet_opens_no_remote_shell():
+    """Tailscale SSH takes over port 22 and is not in the ACL this plan describes."""
+    step = adopt.plan("axol")[0]
+    assert "login --ssh" not in step.script
+
+
+def test_a_rerun_turns_tailscale_ssh_off_rather_than_leaving_it():
+    """A robot an earlier run enabled it on must converge, not stay as it was."""
+    step = adopt.plan("axol")[0]
+    assert "tailscale set --ssh=false" in step.script

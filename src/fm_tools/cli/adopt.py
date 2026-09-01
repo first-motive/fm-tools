@@ -221,6 +221,18 @@ def _tailscale_step() -> Step:
     Never ``logout``: that deletes the profile, and getting back onto a tailnet
     we do not administer is then somebody else's favour.
 
+    No ``--ssh``, and the setting is turned off rather than merely not asked for.
+    Tailscale SSH is a second way into the robot, and tailscaled takes over port
+    22 for tailnet connections once it is on — so enabling it without a matching
+    ``ssh`` policy block locks out the plain ssh that adopt itself runs on. The
+    ACL this plan describes opens one port to one destination; a remote shell is
+    not in it.
+
+    Dropping the flag alone would leave a robot an earlier run had already
+    enabled it on exactly as it was, so every run asserts it off. Adopt is rerun
+    on half-layered hosts more often than fresh ones, and a step that converges
+    is worth more than one that only avoids making things worse.
+
     ``TS_AUTHKEY`` in the adopting operator's environment makes the login
     unattended. Without it the step prints a URL and waits, which is fine at a
     keyboard and a hang in a script. It is passed through the ssh call and never
@@ -235,10 +247,11 @@ if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 if [ -n "${{TS_AUTHKEY:-}}" ]; then
-  sudo tailscale login --ssh --advertise-tags={TAILNET_TAG} --auth-key="$TS_AUTHKEY"
+  sudo tailscale login --advertise-tags={TAILNET_TAG} --auth-key="$TS_AUTHKEY"
 else
-  sudo tailscale login --ssh --advertise-tags={TAILNET_TAG}
+  sudo tailscale login --advertise-tags={TAILNET_TAG}
 fi
+sudo tailscale set --ssh=false
 {_ledger("tailscale", ("tailscale",))}
 """.strip(),
     )
