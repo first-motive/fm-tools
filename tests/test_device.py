@@ -157,3 +157,16 @@ def test_no_tailnet_is_a_precondition_failure(monkeypatch, capsys):
 def test_an_unknown_device_verb_is_a_usage_error(capsys):
     assert main(["device", "frobnicate"]) == exits.USAGE
     assert "unknown device verb" in capsys.readouterr().err
+
+
+def test_a_robot_name_derives_the_robot_role():
+    assert device.role_of("fm-rob-01") == "robot"
+
+
+def test_a_robot_carries_no_ssh_user():
+    # It runs the vendor's OS with the vendor's accounts; adopt layers onto that
+    # rather than replacing it, so ~/.ssh/config decides.
+    robot = device.Device(
+        name="fm-rob-01", role="robot", host="fm-rob-01.tail1234.ts.net", online=True, addresses=()
+    )
+    assert robot.target == "fm-rob-01.tail1234.ts.net"

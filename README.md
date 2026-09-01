@@ -86,7 +86,7 @@ Verbs that act, each by handing the work to a repo's own script:
 | `fm reset <repo> [args…]` | Runs that repo's `install.sh reset` — teardown, in the repo's own words. |
 | `fm uninstall <repo> [args…]` | Runs that repo's `install.sh uninstall`. |
 | `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
-| `fm device list\|ssh\|tunnel` | The fleet: which machines exist, connecting to one, forwarding a port off one. |
+| `fm device list\|ssh\|tunnel\|adopt` | The fleet: which machines exist, connecting to one, forwarding a port off one, and layering First Motive onto a robot that arrives on a vendor OS. |
 | `fm diagram list\|render\|check\|watch` | Every diagram in the workspace, and the per-repo renderer behind each one. |
 | `fm run -- <command>` | Runs a raw command and records it as a missing verb. |
 | `fm release --repo R --cut -- [args…]` | Runs that repo's release script, but only once CI is green on the commit a tag would land on. |
@@ -233,6 +233,36 @@ appliance account, while a `mac` is somebody's laptop, so its target carries no
 user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
 named the fleet way — phones, personal laptops — are left out rather than listed
 as unknowns nobody can act on.
+
+### Adopting A Robot
+
+A recorder rig is flashed, and fm-setup owns every package on its disk. A robot
+is not: an Anvil workcell ships with the vendor's own Ubuntu and docker stack,
+and an Axol ships with Almond's release driving the CAN bus. Neither is ours to
+reimage, so a robot joins the fleet by having five things layered onto the OS it
+came with.
+
+```bash
+fm device adopt anvil-workcell --role robot --robot anvil-openarm-v2 \
+  --name fm-rob-01 --dry-run
+```
+
+The steps run over ssh, in order, and stop at the first one that fails:
+
+```
+1. tailscale        join the tailnet as tag:fm-robot
+2. fm-tools         clone fm-tools and put the fm CLI on PATH
+3. machine init     write the identity card — role robot, and which robot it is
+4. fm-comms         install the zenoh bridge  (anvil kinds only)
+5. fm-robot-agent   install the agent and its service
+```
+
+An Axol takes four rather than five: it publishes its own joint states from the
+agent and has no DDS graph for a bridge to join. Every apt package a step adds is
+recorded in fm-setup's ledger under `/var/lib/fm-setup/pkgs`, so the layering can
+be removed again without reaching past it — no step here autoremoves or purges on
+a machine the vendor still supports. `--dry-run` prints the scripts and runs
+none of them; read them before adopting hardware.
 
 ### Credentials
 

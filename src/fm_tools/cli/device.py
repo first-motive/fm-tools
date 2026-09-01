@@ -36,18 +36,22 @@ from rich.console import Console
 from rich.table import Table
 
 from . import exits
+from .adopt import run_adopt
 from .machine import NAME_PATTERN, CardError, read_card
 from .payload import emit
 
 # role → the abbreviation its name carries, mirroring fm-setup's
 # FM_MACHINE_NAME_ABBREV. Inverted below to read a role off a peer's name, which
 # is the only fact about a peer available without connecting to it.
-ROLE_ABBREV = {"jetson": "rec", "workstation": "ws", "mac": "mac"}
+ROLE_ABBREV = {"jetson": "rec", "workstation": "ws", "mac": "mac", "robot": "rob"}
 ABBREV_ROLE = {abbrev: role for role, abbrev in ROLE_ABBREV.items()}
 
 # The account First Motive's provisioned machines run as (fm-setup's
 # FM_JETSON_USER / FM_GROUP). A mac is a person's laptop: its login name is not
 # ours to assume, so the target is left bare for ssh's own config to resolve.
+# A robot is not in this set: it runs the vendor's OS with the vendor's accounts,
+# and adopt layers onto that rather than replacing it. ssh's own config decides,
+# the same way it does for a mac.
 APPLIANCE_USER = "fm"
 ROLES_WITH_APPLIANCE_USER = frozenset({"jetson", "workstation"})
 
@@ -234,6 +238,8 @@ USAGE = """usage: fm device <verb> [args...]
   list [--json]              every fleet machine the tailnet knows
   ssh <name> [args...]       connect as the account the machine's role implies
   tunnel <name> <ports>      forward a port over ssh; 8080 or 9090:8080
+  adopt <host> --role robot --robot <kind>
+                             layer First Motive onto a robot's vendor OS
 
 The registry is the tailnet plus each machine's identity card. No hostname,
 address, or account is written down here."""
@@ -266,12 +272,19 @@ def run_device(argv: list[str]) -> int:
         print(USAGE)
         return exits.OK if verb else exits.USAGE
 
-    if verb not in ("list", "ssh", "tunnel"):
-        exits.fail(f"unknown device verb {verb!r} (use list|ssh|tunnel)")
+    if verb not in ("list", "ssh", "tunnel", "adopt"):
+        exits.fail(f"unknown device verb {verb!r} (use list|ssh|tunnel|adopt)")
         return exits.USAGE
     if verb in ("ssh", "tunnel") and not rest:
         exits.fail(f"fm device {verb} needs a machine name")
         return exits.USAGE
+
+    # Adopted before the tailnet is consulted, and deliberately: a robot being
+    # adopted is not on the tailnet yet — joining it is the first thing adopt
+    # does — so resolving it through the registry would refuse every host the
+    # verb exists for.
+    if verb == "adopt":
+        return run_adopt(rest, _run)
 
     # Everything below needs the tailnet, and there is no second source of truth
     # to fall back to when it is unreachable.

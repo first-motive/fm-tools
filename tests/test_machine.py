@@ -96,3 +96,21 @@ def test_the_system_path_is_platform_specific(monkeypatch):
     assert str(card_path()) == "/etc/fm/machine.json"
     monkeypatch.setattr("fm_tools.cli.machine.platform.system", lambda: "Darwin")
     assert card_path().parts[-3:] == (".config", "fm", "machine.json")
+
+
+def test_a_robot_card_names_which_robot_it_is(tmp_path):
+    card = _write(tmp_path / "machine.json", name="fm-rob-01", role="robot", robot="axol")
+    assert read_card(card).robot == "axol"
+
+
+def test_a_card_that_is_not_a_robots_carries_no_robot(tmp_path):
+    # Absence is a valid state, the same way an absent workload is.
+    assert read_card(_write(tmp_path / "machine.json")).robot == ""
+
+
+def test_an_unknown_robot_is_refused(tmp_path):
+    # The value selects a bridge profile and an agent adapter downstream, so a
+    # reader that does not know it must refuse the card rather than pass it on.
+    card = _write(tmp_path / "machine.json", name="fm-rob-01", role="robot", robot="forklift")
+    with pytest.raises(CardError, match="forklift"):
+        read_card(card)
