@@ -476,3 +476,43 @@ def test_no_domain_given_leaves_the_fleet_default_alone():
     step = next(s for s in adopt.plan("axol", router="tcp/rune:7447") if s.name.startswith("fm-comms"))
     assert "DOMAIN_ID" not in step.script
     assert "FM_ROUTER_ENDPOINT" in step.script
+
+
+# --- reading the robot's own config -------------------------------------------
+
+
+def test_an_anvil_reads_its_own_vendor_config():
+    """The robot already records its domain and interface; typing them again drifts."""
+    step = next(s for s in adopt.plan("anvil-openarm-v2") if s.name.startswith("fm-comms"))
+    assert '"$HOME/anvil-loader/.env.config"' in step.script
+    assert "ROS_DOMAIN_ID" in step.script
+    assert "CYCLONEDDS_IFACE" in step.script
+    assert "FM_DDS_IFACE" in step.script
+
+
+def test_an_axol_reads_no_vendor_config():
+    """It has no such file; the endpoint role needs neither value."""
+    step = next(s for s in adopt.plan("axol") if s.name.startswith("fm-comms"))
+    assert "anvil-loader" not in step.script
+
+
+def test_an_absent_vendor_config_is_not_a_failure():
+    step = next(s for s in adopt.plan("anvil-openarm-v2") if s.name.startswith("fm-comms"))
+    assert 'if [ -f "$vendor_env" ]; then' in step.script
+
+
+def test_an_explicit_domain_wins_over_the_vendor_config():
+    """The read sets a default; anything passed is exported after it."""
+    step = next(
+        s for s in adopt.plan("anvil-openarm-v2", domain="7")
+        if s.name.startswith("fm-comms")
+    )
+    assert step.script.index("anvil-loader") < step.script.index("export FM_ROS_DOMAIN_ID=7")
+
+
+def test_a_vendor_value_that_is_not_plain_is_refused():
+    """That file is the vendor's; a value from it reaches a shell and a terminal."""
+    step = next(s for s in adopt.plan("anvil-openarm-v2") if s.name.startswith("fm-comms"))
+    assert 'case "$value" in *[!A-Za-z0-9._-]*) value="" ;; esac' in step.script
+    # Refused before it is exported, and before it is echoed.
+    assert step.script.index('case "$value"') < step.script.index('export FM_ROS_DOMAIN_ID="$value"')

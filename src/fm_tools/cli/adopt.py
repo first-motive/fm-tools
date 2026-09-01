@@ -78,6 +78,18 @@ GIT_BASE = "https://github.com/first-motive"
 # vendor's, not ours — there is no `fm` user to assume here.
 WORKSPACE = '"$HOME/fm"'
 
+#: Where an Anvil workcell keeps the file its own stack boots from. It already
+#: records the DDS domain and the interface CycloneDDS is pinned to, so adopt
+#: reads them rather than asking an operator to type facts the robot already
+#: holds. A value typed in two places disagrees the moment one is edited.
+VENDOR_ENV = '"$HOME/anvil-loader/.env.config"'
+
+#: What adopt takes from that file, and the fm-comms key each becomes.
+VENDOR_KEYS = (
+    ("ROS_DOMAIN_ID", ("FM_ROS_DOMAIN_ID", "ROS_DOMAIN_ID")),
+    ("CYCLONEDDS_IFACE", ("FM_DDS_IFACE",)),
+)
+
 # fm-setup's ledger, whose format this mirrors rather than imports: the first
 # step runs before fm-setup is on the host at all, so there is no lib.sh to
 # source. Reading and removal stay fm-setup's — this only records.
@@ -316,6 +328,32 @@ FM_HOME={WORKSPACE} fm machine init {rendered} --yes
     )
 
 
+def _vendor_reads() -> str:
+    """Shell that lifts this robot's own settings out of its vendor config.
+
+    Read on the robot rather than fetched here, because the file is the robot's
+    truth and a copy taken earlier could already be stale. Anything the caller
+    passed explicitly is exported after this and wins.
+
+    Silent when the file is absent: an Axol has no such file, and a workcell that
+    keeps one elsewhere is a reason to pass the values rather than to fail.
+    """
+    lines = [f"vendor_env={VENDOR_ENV}", 'if [ -f "$vendor_env" ]; then']
+    for source, targets in VENDOR_KEYS:
+        lines.append(f'  value="$(sed -n \'s/^{source}=//p\' "$vendor_env" | tail -1)"')
+        # A domain is digits and an interface name is a word. Anything else in
+        # this file is not a value to carry forward — it is refused rather than
+        # exported, and rather than printed, since it also reaches a terminal.
+        lines.append('  case "$value" in *[!A-Za-z0-9._-]*) value="" ;; esac')
+        lines.append('  if [ -n "$value" ]; then')
+        for target in targets:
+            lines.append(f'    export {target}="$value"')
+        lines.append(f'    echo "adopt: {source}=$value (from the robot\'s own config)"')
+        lines.append("  fi")
+    lines.append("fi")
+    return "\n".join(lines) + "\n"
+
+
 def _fleet_exports(router: str, domain: str) -> str:
     """The values fm-comms' installer seeds into the fleet env file.
 
@@ -364,7 +402,7 @@ def _bridge_step(ref: str = "", router: str = "", domain: str = "") -> Step:
         summary="install the zenoh bridge for this robot's profile",
         packages=("zenoh-bridge-ros2dds",),
         script=f"""
-{_fleet_exports(router, domain)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
+{_vendor_reads()}{_fleet_exports(router, domain)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
 curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role bridge
 {_ledger("fm-comms", ("zenoh-bridge-ros2dds",))}
 """.strip(),
