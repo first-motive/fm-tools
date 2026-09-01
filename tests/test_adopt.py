@@ -384,3 +384,17 @@ def test_every_step_gets_a_pty_so_sudo_can_prompt(ran):
     assert ran, "no ssh was attempted"
     for command in ran:
         assert command[:3] == ["ssh", "-t", "fm-rob-02"]
+
+
+def test_the_installed_wheel_matches_the_checkout():
+    """fm-tools defaults the wheel to a release tag that a prerelease has not cut."""
+    step = next(s for s in adopt.plan("axol") if s.name == "fm-tools")
+    assert f"export FM_TOOLS_REF={adopt.REFS['fm-tools']}" in step.script
+
+
+def test_an_override_reaches_the_wheel_too():
+    step = next(
+        s for s in adopt.plan("axol", ref="feat/robots-as-devices") if s.name == "fm-tools"
+    )
+    assert "export FM_TOOLS_REF=feat/robots-as-devices" in step.script
+    assert adopt.REFS["fm-tools"] not in step.script

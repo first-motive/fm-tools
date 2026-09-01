@@ -245,9 +245,13 @@ fi
 
 
 def _fm_tools_step(ref: str = "") -> Step:
-    # The checkout is cloned at its pinned ref and its own install.sh resolves which release
-    # to put on PATH. Pinning that release here would be a second copy of a
-    # version fm-tools already single-sources from its pyproject.
+    # Two things are installed here and they must agree: the checkout under the
+    # workspace, and the wheel `uv tool install` puts on PATH. fm-tools' own
+    # installer defaults that wheel to `v<version from pyproject.toml>`, which is
+    # a release tag that does not exist while this work is a prerelease — so the
+    # pinned ref is handed to it through `FM_TOOLS_REF`, the override it already
+    # documents. Without it the step installs a different fm than the one cloned,
+    # or fails outright because the release tag was never cut.
     return Step(
         name="fm-tools",
         summary="clone fm-tools and put the fm CLI on PATH",
@@ -257,6 +261,7 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends git curl
 command -v uv >/dev/null 2>&1 || curl -fsSL https://astral.sh/uv/install.sh | sh
 {_checkout("fm-tools", ref)}
+export FM_TOOLS_REF={shlex.quote(ref_for("fm-tools", ref))}
 {WORKSPACE}/fm-tools/install.sh
 {_ledger("fm-tools", ("git", "curl"))}
 """.strip(),
