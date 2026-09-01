@@ -510,7 +510,13 @@ def run_adopt(argv: list[str], runner) -> int:
         body = "\n".join(
             (PREAMBLE, _authkey_prefix(step.name, os.environ.get(AUTHKEY_VAR, "")), step.script)
         )
-        code = runner(["ssh", host, "bash", "-c", shlex.quote(body)])
+        # `-t` asks for a pty on the robot. Every step runs sudo, and a robot
+        # supported by its vendor keeps a password on it, so without one sudo
+        # cannot prompt and the step dies with "no tty present" no matter who is
+        # at the keyboard. The tailscale step also prints a login URL to read.
+        # Single `-t`, not `-tt`: with no local terminal ssh says so and carries
+        # on, which is what a passwordless host in CI wants.
+        code = runner(["ssh", "-t", host, "bash", "-c", shlex.quote(body)])
         if code != exits.OK:
             exits.fail(f"{step.name} failed on {host} (exit {code}) — nothing after it ran")
             return code

@@ -127,7 +127,7 @@ def test_adopt_runs_one_ssh_per_step(ran):
     )
     assert code == exits.OK
     assert len(ran) == 5
-    assert all(command[0] == "ssh" and command[1] == "anvil-workcell" for command in ran)
+    assert all(command[:3] == ["ssh", "-t", "anvil-workcell"] for command in ran)
 
 
 def test_a_failed_step_stops_the_ones_after_it(monkeypatch):
@@ -374,3 +374,13 @@ def test_a_dry_run_never_prints_the_key(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "tskey-secret" not in printed
     assert "<redacted, from this shell>" in printed
+
+
+def test_every_step_gets_a_pty_so_sudo_can_prompt(ran):
+    """Each step runs sudo; a vendor-supported robot keeps a password on it."""
+    device.run_device(
+        ["adopt", "fm-rob-02", "--role", "robot", "--robot", "axol"]
+    )
+    assert ran, "no ssh was attempted"
+    for command in ran:
+        assert command[:3] == ["ssh", "-t", "fm-rob-02"]
