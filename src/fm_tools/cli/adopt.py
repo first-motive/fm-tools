@@ -9,7 +9,9 @@ the fleet by having five things layered onto the OS it came with, in order::
     1. tailscale        the network it is reached on, tagged tag:fm-robot
     2. fm-tools         the fm CLI, so the host answers the same verbs as a rig
     3. machine init     the identity card — role robot, and which robot it is
-    4. fm-comms bridge  the zenoh bridge (anvil kinds only; an Axol runs none)
+    4. fm-comms         the fleet env file: through the zenoh bridge on an anvil,
+                        through the endpoint role on an Axol, which has no DDS
+                        graph for a bridge to join
     5. fm-robot-agent   the queryable server the desktop and `fm robot` drive
 
 Each step runs over ssh as one shell script, and each one that lands apt
@@ -24,6 +26,7 @@ it touches a robot — this is the one flow whose mistakes land on hardware.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass
@@ -36,11 +39,33 @@ from .machine import NAME_PATTERN, ROBOT_KINDS
 # else on the tailnet.
 TAILNET_TAG = "tag:fm-robot"
 
-# The ref every front door is fetched at. One constant rather than a pin per
-# repo, because the robot half of all four repos lands on their default branches
-# together and a release pin here would be stale on every one of them at once.
-# It becomes a release tag when the fleet cuts the releases this flow needs.
-REF = "main"
+# The ref each front door is fetched at, pinned per repo.
+#
+# A default branch here would mean a push to any of these four reaches a robot
+# with sudo, which is the whole reason the pins are named rather than tracked.
+# They are prereleases (`-robots.N`) rather than plain versions because this work
+# merges only after the zenoh-only gate lands: the tag marks a branch tip that is
+# real enough to install and honest about not being a release yet.
+#
+# Bump one when its repo cuts the next prerelease. `--ref` overrides all four for
+# a bench run against a branch, and says so in the plan it prints.
+REFS = {
+    "fm-tools": "v0.9.0-robots.1",
+    "fm-setup": "v0.2.0-robots.1",
+    "fm-comms": "v0.2.0-robots.1",
+    "fm-robot-agent": "v0.1.0-robots.1",
+}
+
+# What a ref may look like. Every pinned value is a tag we cut, but `--ref` is
+# typed by a caller and lands inside a shell script that runs on a robot as root,
+# so it is checked rather than quoted: a ref is a git ref or it is not a ref, and
+# there is no legitimate one holding a quote, a semicolon, or a space.
+REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
+
+# A zenoh locator, as the fleet env file spells one: `tcp/<host>:<port>`. Checked
+# for the same reason a ref is — it is typed by a caller and lands in a script
+# running on a robot as root.
+ROUTER_PATTERN = re.compile(r"^[a-z]+/[A-Za-z0-9._:-]{1,253}:[0-9]{1,5}$")
 
 RAW_BASE = "https://raw.githubusercontent.com/first-motive"
 GIT_BASE = "https://github.com/first-motive"
@@ -123,43 +148,104 @@ rm -f "$tmp"
 """.rstrip()
 
 
-def _checkout(repo: str) -> str:
-    """Shell that puts a repo's checkout at ``REF`` under the workspace.
+def valid_router(endpoint: str) -> bool:
+    """Whether a string is a zenoh locator this will put in a script running as root."""
+    return bool(ROUTER_PATTERN.match(endpoint))
+
+
+def valid_ref(ref: str) -> bool:
+    """Whether a string is a git ref this will put in a script running as root.
+
+    git's own rules, narrowed: no `..`, no trailing `.lock`, and nothing outside
+    the character set above. Narrower than git accepts on purpose — a ref that
+    needs anything else is not one of ours.
+    """
+    return bool(REF_PATTERN.match(ref)) and ".." not in ref and not ref.endswith(".lock")
+
+
+def ref_for(repo: str, override: str = "") -> str:
+    """The ref a repo is fetched at, or the override a bench run asked for."""
+    if override:
+        if not valid_ref(override):
+            raise ValueError(f"{override!r} is not a usable git ref")
+        return override
+    try:
+        return REFS[repo]
+    except KeyError:
+        raise KeyError(f"no pinned ref for {repo!r}") from None
+
+
+def _checkout(repo: str, override: str = "") -> str:
+    """Shell that puts a repo's checkout at its pinned ref under the workspace.
 
     Idempotent, because adopt is rerun on a host that is half-layered far more
     often than on a fresh one: a clone that is already there is fetched and moved
     to the ref rather than refused or replaced.
+
+    Checked out detached, and a tag is resolved before a branch of the same name.
+    A pinned tag has no upstream to pull from, and `git pull` on it would either
+    fail or — worse, if a branch shared the name — quietly move the host onto a
+    moving ref. Fetching with `--force` lets a re-cut prerelease tag land.
     """
     path = f"{WORKSPACE}/{repo}"
+    ref = ref_for(repo, override)
     return f"""
 mkdir -p {WORKSPACE}
 if [ -d {path}/.git ]; then
-  git -C {path} fetch --tags --quiet origin
-  git -C {path} checkout --quiet {REF}
-  git -C {path} pull --ff-only --quiet
+  git -C {path} fetch --tags --force --prune --quiet origin
 else
-  git clone --quiet --branch {REF} {GIT_BASE}/{repo}.git {path}
+  git clone --quiet --no-checkout {GIT_BASE}/{repo}.git {path}
+  git -C {path} fetch --tags --force --quiet origin
+fi
+if git -C {path} rev-parse --verify --quiet "refs/tags/{ref}" >/dev/null; then
+  git -C {path} checkout --quiet --detach "refs/tags/{ref}"
+elif git -C {path} rev-parse --verify --quiet "refs/remotes/origin/{ref}" >/dev/null; then
+  git -C {path} checkout --quiet --detach "refs/remotes/origin/{ref}"
+else
+  echo "adopt: {repo} has no ref {ref}" >&2
+  exit 1
 fi
 """.rstrip()
 
 
 def _tailscale_step() -> Step:
+    """Join the fleet tailnet, without evicting a tailnet the robot already has.
+
+    ``login`` rather than ``up``. A robot supported by its vendor may already be
+    a node on the vendor's own tailnet — the Anvil workcell is, tagged
+    ``customer-workcell`` — and ``up`` acts on whichever profile is active, so it
+    would try to advertise a tag that does not exist over there rather than join
+    us. ``login`` adds a second profile and leaves the first on disk, so
+    ``tailscale switch`` hands the robot back to its vendor whenever needed.
+
+    Never ``logout``: that deletes the profile, and getting back onto a tailnet
+    we do not administer is then somebody else's favour.
+
+    ``TS_AUTHKEY`` in the adopting operator's environment makes the login
+    unattended. Without it the step prints a URL and waits, which is fine at a
+    keyboard and a hang in a script. It is passed through the ssh call and never
+    printed: a dry run shows the flag, not the key.
+    """
     return Step(
         name="tailscale",
-        summary=f"join the tailnet as {TAILNET_TAG}",
+        summary=f"join the tailnet as {TAILNET_TAG}, keeping any tailnet already there",
         packages=("tailscale",),
         script=f"""
 if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
-sudo tailscale up --ssh --advertise-tags={TAILNET_TAG}
+if [ -n "${{TS_AUTHKEY:-}}" ]; then
+  sudo tailscale login --ssh --advertise-tags={TAILNET_TAG} --auth-key="$TS_AUTHKEY"
+else
+  sudo tailscale login --ssh --advertise-tags={TAILNET_TAG}
+fi
 {_ledger("tailscale", ("tailscale",))}
 """.strip(),
     )
 
 
-def _fm_tools_step() -> Step:
-    # The checkout is cloned at REF and its own install.sh resolves which release
+def _fm_tools_step(ref: str = "") -> Step:
+    # The checkout is cloned at its pinned ref and its own install.sh resolves which release
     # to put on PATH. Pinning that release here would be a second copy of a
     # version fm-tools already single-sources from its pyproject.
     return Step(
@@ -170,14 +256,14 @@ def _fm_tools_step() -> Step:
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends git curl
 command -v uv >/dev/null 2>&1 || curl -fsSL https://astral.sh/uv/install.sh | sh
-{_checkout("fm-tools")}
+{_checkout("fm-tools", ref)}
 {WORKSPACE}/fm-tools/install.sh
 {_ledger("fm-tools", ("git", "curl"))}
 """.strip(),
     )
 
 
-def _machine_init_step(kind: str, name: str) -> Step:
+def _machine_init_step(kind: str, name: str, ref: str = "") -> Step:
     """The identity card, written by fm-setup's own verb through the fm CLI.
 
     An anvil card also carries ``workload: robot``, which is what fm-comms reads
@@ -197,54 +283,118 @@ def _machine_init_step(kind: str, name: str) -> Step:
         packages=("jq",),
         script=f"""
 sudo apt-get install -y --no-install-recommends jq
-{_checkout("fm-setup")}
+{_checkout("fm-setup", ref)}
 FM_HOME={WORKSPACE} fm machine init {rendered} --yes
 {_ledger("machine-init", ("jq",))}
 """.strip(),
     )
 
 
-def _bridge_step() -> Step:
+def _router_export(router: str) -> str:
+    """The line that hands the router endpoint to fm-comms' own installer.
+
+    Exported rather than written here: fm-comms owns the env file's format and
+    seeds a placeholder with this value itself. A second component writing that
+    file is the drift its own header warns about.
+    """
+    return f"export FM_ROUTER_ENDPOINT={shlex.quote(router)}\n" if router else ""
+
+
+def _endpoint_step(ref: str = "", router: str = "") -> Step:
+    """The fleet's shared facts for a robot that runs no bridge.
+
+    An Axol has no DDS graph — its own stack owns the CAN bus and the agent
+    publishes joint states onto Zenoh directly — so a bridge there would carry
+    nothing. The agent still has to know where the router is, and that value
+    lives in one file for the whole fleet. fm-comms' narrowest role places it.
+    """
+    return Step(
+        name="fm-comms-endpoint",
+        summary="place the fleet env file (no bridge: this robot has no DDS graph)",
+        script=f"""
+{_router_export(router)}curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role endpoint
+""".strip(),
+    )
+
+
+def _bridge_step(ref: str = "", router: str = "") -> Step:
     return Step(
         name="fm-comms",
         summary="install the zenoh bridge for this robot's profile",
         packages=("zenoh-bridge-ros2dds",),
         script=f"""
-curl -fsSL {RAW_BASE}/fm-comms/{REF}/install.sh | bash -s -- --role bridge
+{_router_export(router)}curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role bridge
 {_ledger("fm-comms", ("zenoh-bridge-ros2dds",))}
 """.strip(),
     )
 
 
-def _agent_step(kind: str) -> Step:
+def _agent_step(kind: str, ref: str = "") -> Step:
     role = "anvil" if is_anvil(kind) else "axol"
     return Step(
         name="fm-robot-agent",
         summary=f"install the {role} robot agent and its service",
         script=f"""
-curl -fsSL {RAW_BASE}/fm-robot-agent/{REF}/install.sh | bash -s -- --role {role}
+curl -fsSL {RAW_BASE}/fm-robot-agent/{ref_for("fm-robot-agent", ref)}/install.sh | bash -s -- --role {role}
 """.strip(),
     )
 
 
-def plan(kind: str, name: str = "") -> list[Step]:
+def plan(kind: str, name: str = "", ref: str = "", router: str = "") -> list[Step]:
     """The steps adopting a robot of this kind runs, in order.
 
-    An Axol gets four rather than five: it publishes its own joint states from
-    the agent and has no DDS graph for a bridge to join, so installing one would
-    place a service with nothing to carry.
+    Both kinds take five. An Axol's fourth is fm-comms' endpoint role rather than
+    its bridge: it publishes its own joint states from the agent and has no DDS
+    graph for a bridge to join, so a bridge would place a service with nothing to
+    carry — but it still needs the router endpoint the fleet env file holds, and
+    the agent's own installer refuses without it.
+
+    ``ref`` overrides every repo's pinned prerelease, for a bench run against a
+    branch. It applies to all four rather than one, because a host layered from
+    a mix of a branch and three tags is a state nobody can reproduce later.
     """
-    steps = [_tailscale_step(), _fm_tools_step(), _machine_init_step(kind, name)]
-    if is_anvil(kind):
-        steps.append(_bridge_step())
-    steps.append(_agent_step(kind))
+    steps = [
+        _tailscale_step(),
+        _fm_tools_step(ref),
+        _machine_init_step(kind, name, ref),
+    ]
+    steps.append(
+        _bridge_step(ref, router) if is_anvil(kind) else _endpoint_step(ref, router)
+    )
+    steps.append(_agent_step(kind, ref))
     return steps
 
 
-def _print_plan(host: str, kind: str, steps: list[Step]) -> None:
+#: The step that needs a secret, and the variable it needs. Named here so the
+#: secret is forwarded to exactly one step rather than every one of them.
+AUTHKEY_STEP = "tailscale"
+AUTHKEY_VAR = "TS_AUTHKEY"
+
+
+def _authkey_prefix(step_name: str, authkey: str) -> str:
+    """The export line that hands a step its secret, or nothing.
+
+    tradeoff: the key reaches the robot inside the script, so it is briefly
+    visible in `ps` there. The alternatives — an ssh `SendEnv` the server must be
+    configured to accept, or restructuring the runner to write on stdin — buy
+    little for a tailscale auth key, which is short-lived and single-use. Never
+    printed: a dry run shows the variable, not its value.
+    """
+    if step_name != AUTHKEY_STEP or not authkey:
+        return ""
+    return f"export {AUTHKEY_VAR}={shlex.quote(authkey)}\n"
+
+
+def _print_plan(host: str, kind: str, steps: list[Step], ref: str = "") -> None:
     print(f"fm device adopt {host} --role robot --robot {kind} (dry run)")
+    if ref:
+        print(f"  every repo overridden to {ref} — not a pinned prerelease")
+    else:
+        print("  pinned: " + ", ".join(f"{repo} {tag}" for repo, tag in sorted(REFS.items())))
     for index, step in enumerate(steps, start=1):
         print(f"\n{index}. {step.name} — {step.summary}")
+        if step.name == AUTHKEY_STEP and os.environ.get(AUTHKEY_VAR):
+            print(f"     export {AUTHKEY_VAR}=<redacted, from this shell>")
         for line in step.script.splitlines():
             print(f"     {line}")
 
@@ -255,10 +405,13 @@ USAGE = """usage: fm device adopt <host> --role robot --robot <kind> [options]
   --role robot        the only role adopt provisions
   --robot <kind>      {kinds}
   --name <fm-rob-nn>  the fleet name to write on the card
+  --router <locator>  where this robot finds the router, as tcp/<host>:<port>
+  --ref <ref>         override every repo's pinned prerelease, for a bench run
   --dry-run           print the steps, run none of them
 
-Layers tailscale, fm-tools, the identity card, the zenoh bridge (anvil kinds
-only), and the robot agent onto the OS the robot came with. Every package each
+Layers tailscale, fm-tools, the identity card, the fleet env file (through the
+zenoh bridge on anvil kinds, through fm-comms' endpoint role otherwise), and the
+robot agent onto the OS the robot came with. Every package each
 step adds is recorded in fm-setup's ledger, so the layering can be removed again
 without reaching past it.""".format(kinds=" | ".join(ROBOT_KINDS))
 
@@ -269,7 +422,7 @@ def _parse(argv: list[str]) -> dict | int:
     Hand-parsed like every other ``fm device`` verb: the module is reached
     through a forwarding verb, so argparse never sees these arguments.
     """
-    parsed = {"host": "", "kind": "", "name": "", "dry_run": False}
+    parsed = {"host": "", "kind": "", "name": "", "ref": "", "router": "", "dry_run": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -279,7 +432,7 @@ def _parse(argv: list[str]) -> dict | int:
         if arg == "--dry-run":
             parsed["dry_run"] = True
             continue
-        if arg in ("--role", "--robot", "--name"):
+        if arg in ("--role", "--robot", "--name", "--ref", "--router"):
             if not rest:
                 exits.fail(f"{arg} needs a value")
                 return exits.USAGE
@@ -289,7 +442,20 @@ def _parse(argv: list[str]) -> dict | int:
                     exits.fail(f"adopt provisions the robot role, not {value!r}")
                     return exits.USAGE
                 continue
-            parsed["kind" if arg == "--robot" else "name"] = value
+            if arg == "--robot":
+                parsed["kind"] = value
+            elif arg == "--name":
+                parsed["name"] = value
+            elif arg == "--router":
+                if not valid_router(value):
+                    exits.fail(f"{value!r} is not a router locator (want tcp/<host>:<port>)")
+                    return exits.USAGE
+                parsed["router"] = value
+            else:
+                if not valid_ref(value):
+                    exits.fail(f"{value!r} is not a usable git ref")
+                    return exits.USAGE
+                parsed["ref"] = value
             continue
         if arg.startswith("-"):
             exits.fail(f"unknown adopt option {arg!r}")
@@ -327,15 +493,23 @@ def run_adopt(argv: list[str], runner) -> int:
         return parsed
 
     host, kind = str(parsed["host"]), str(parsed["kind"])
-    steps = plan(kind, str(parsed["name"]))
+    ref = str(parsed["ref"])
+    steps = plan(kind, str(parsed["name"]), ref, str(parsed["router"]))
 
     if parsed["dry_run"]:
-        _print_plan(host, kind, steps)
+        _print_plan(host, kind, steps, ref)
         return exits.OK
+    if ref:
+        # Said out loud, because a host layered from a branch cannot be rebuilt
+        # to the same state later and the ledger records what was installed, not
+        # which commit it came from.
+        print(f"fm: adopting {host} at {ref} — a moving ref, not a pinned prerelease")
 
     for index, step in enumerate(steps, start=1):
         print(f"fm: adopt {host} step {index}/{len(steps)} — {step.name}")
-        body = "\n".join((PREAMBLE, step.script))
+        body = "\n".join(
+            (PREAMBLE, _authkey_prefix(step.name, os.environ.get(AUTHKEY_VAR, "")), step.script)
+        )
         code = runner(["ssh", host, "bash", "-c", shlex.quote(body)])
         if code != exits.OK:
             exits.fail(f"{step.name} failed on {host} (exit {code}) — nothing after it ran")
