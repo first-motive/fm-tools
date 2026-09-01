@@ -437,3 +437,42 @@ def test_the_agent_checkout_honours_an_override():
     )
     assert "feat/robots-as-devices" in step.script
     assert adopt.REFS["fm-robot-agent"] not in step.script
+
+
+# --- the DDS domain a robot's own stack runs on -------------------------------
+
+
+@pytest.mark.parametrize("domain", ["0", "1", "42", "232"])
+def test_a_real_domain_is_accepted(domain):
+    assert adopt.valid_domain(domain) is True
+
+
+@pytest.mark.parametrize("domain", ["233", "-1", "1; id", "abc", "", "01x", "999"])
+def test_a_domain_that_is_not_one_is_refused(domain):
+    assert adopt.valid_domain(domain) is False
+
+
+def test_the_cli_refuses_a_bad_domain_before_any_ssh(ran):
+    code = device.run_device(
+        ["adopt", "fm-rob-01", "--role", "robot", "--robot", "axol", "--ros-domain", "999"]
+    )
+    assert code == exits.USAGE
+    assert ran == []
+
+
+@pytest.mark.parametrize("kind", ["anvil-openarm-v2", "axol"])
+def test_the_domain_reaches_the_fm_comms_step_of_either_kind(kind):
+    step = next(
+        s for s in adopt.plan(kind, router="tcp/rune:7447", domain="1")
+        if s.name.startswith("fm-comms")
+    )
+    # Both spellings: the unit exports ROS_DOMAIN_ID from the file, and the
+    # rendered config reads FM_ROS_DOMAIN_ID.
+    assert "export FM_ROS_DOMAIN_ID=1" in step.script
+    assert "export ROS_DOMAIN_ID=1" in step.script
+
+
+def test_no_domain_given_leaves_the_fleet_default_alone():
+    step = next(s for s in adopt.plan("axol", router="tcp/rune:7447") if s.name.startswith("fm-comms"))
+    assert "DOMAIN_ID" not in step.script
+    assert "FM_ROUTER_ENDPOINT" in step.script

@@ -67,6 +67,9 @@ REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 # running on a robot as root.
 ROUTER_PATTERN = re.compile(r"^[a-z]+/[A-Za-z0-9._:-]{1,253}:[0-9]{1,5}$")
 
+#: A DDS domain id. ROS 2 allows 0-232.
+DOMAIN_PATTERN = re.compile(r"^(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-2][0-9]|23[0-2])$")
+
 RAW_BASE = "https://raw.githubusercontent.com/first-motive"
 GIT_BASE = "https://github.com/first-motive"
 
@@ -151,6 +154,11 @@ rm -f "$tmp"
 def valid_router(endpoint: str) -> bool:
     """Whether a string is a zenoh locator this will put in a script running as root."""
     return bool(ROUTER_PATTERN.match(endpoint))
+
+
+def valid_domain(domain: str) -> bool:
+    """Whether a string is a ROS 2 domain id (0-232)."""
+    return bool(DOMAIN_PATTERN.match(domain))
 
 
 def valid_ref(ref: str) -> bool:
@@ -308,17 +316,31 @@ FM_HOME={WORKSPACE} fm machine init {rendered} --yes
     )
 
 
-def _router_export(router: str) -> str:
-    """The line that hands the router endpoint to fm-comms' own installer.
+def _fleet_exports(router: str, domain: str) -> str:
+    """The values fm-comms' installer seeds into the fleet env file.
 
-    Exported rather than written here: fm-comms owns the env file's format and
-    seeds a placeholder with this value itself. A second component writing that
-    file is the drift its own header warns about.
+    Exported rather than written here: fm-comms owns that file's format and seeds
+    its placeholders itself. A second component writing it is the drift its own
+    header warns about.
+
+    The DDS domain is here because a robot's is not ours to choose. The fleet
+    runs one domain, and a vendor stack that already picked another — the Anvil
+    workcell runs on 1 — is a fact about that robot rather than a preference. A
+    bridge left on the fleet default joins a graph that is not there: it starts,
+    connects to the router, matches nothing, and reports no error.
     """
-    return f"export FM_ROUTER_ENDPOINT={shlex.quote(router)}\n" if router else ""
+    lines = []
+    if router:
+        lines.append(f"export FM_ROUTER_ENDPOINT={shlex.quote(router)}")
+    if domain:
+        # Both, because the bridge unit exports ROS_DOMAIN_ID from this file and
+        # the rendered config takes the domain from FM_ROS_DOMAIN_ID.
+        lines.append(f"export FM_ROS_DOMAIN_ID={shlex.quote(domain)}")
+        lines.append(f"export ROS_DOMAIN_ID={shlex.quote(domain)}")
+    return "\n".join(lines) + "\n" if lines else ""
 
 
-def _endpoint_step(ref: str = "", router: str = "") -> Step:
+def _endpoint_step(ref: str = "", router: str = "", domain: str = "") -> Step:
     """The fleet's shared facts for a robot that runs no bridge.
 
     An Axol has no DDS graph — its own stack owns the CAN bus and the agent
@@ -330,19 +352,19 @@ def _endpoint_step(ref: str = "", router: str = "") -> Step:
         name="fm-comms-endpoint",
         summary="place the fleet env file (no bridge: this robot has no DDS graph)",
         script=f"""
-{_router_export(router)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
+{_fleet_exports(router, domain)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
 curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role endpoint
 """.strip(),
     )
 
 
-def _bridge_step(ref: str = "", router: str = "") -> Step:
+def _bridge_step(ref: str = "", router: str = "", domain: str = "") -> Step:
     return Step(
         name="fm-comms",
         summary="install the zenoh bridge for this robot's profile",
         packages=("zenoh-bridge-ros2dds",),
         script=f"""
-{_router_export(router)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
+{_fleet_exports(router, domain)}export FM_TAG={shlex.quote(ref_for("fm-comms", ref))}
 curl -fsSL {RAW_BASE}/fm-comms/{ref_for("fm-comms", ref)}/install.sh | bash -s -- --role bridge
 {_ledger("fm-comms", ("zenoh-bridge-ros2dds",))}
 """.strip(),
@@ -371,7 +393,7 @@ def _agent_step(kind: str, ref: str = "") -> Step:
     )
 
 
-def plan(kind: str, name: str = "", ref: str = "", router: str = "") -> list[Step]:
+def plan(kind: str, name: str = "", ref: str = "", router: str = "", domain: str = "") -> list[Step]:
     """The steps adopting a robot of this kind runs, in order.
 
     Both kinds take five. An Axol's fourth is fm-comms' endpoint role rather than
@@ -390,7 +412,9 @@ def plan(kind: str, name: str = "", ref: str = "", router: str = "") -> list[Ste
         _machine_init_step(kind, name, ref),
     ]
     steps.append(
-        _bridge_step(ref, router) if is_anvil(kind) else _endpoint_step(ref, router)
+        _bridge_step(ref, router, domain)
+        if is_anvil(kind)
+        else _endpoint_step(ref, router, domain)
     )
     steps.append(_agent_step(kind, ref))
     return steps
@@ -437,6 +461,7 @@ USAGE = """usage: fm device adopt <host> --role robot --robot <kind> [options]
   --robot <kind>      {kinds}
   --name <fm-rob-nn>  the fleet name to write on the card
   --router <locator>  where this robot finds the router, as tcp/<host>:<port>
+  --ros-domain <id>   the DDS domain this robot's own stack runs on (0-232)
   --ref <ref>         override every repo's pinned prerelease, for a bench run
   --dry-run           print the steps, run none of them
 
@@ -453,7 +478,10 @@ def _parse(argv: list[str]) -> dict | int:
     Hand-parsed like every other ``fm device`` verb: the module is reached
     through a forwarding verb, so argparse never sees these arguments.
     """
-    parsed = {"host": "", "kind": "", "name": "", "ref": "", "router": "", "dry_run": False}
+    parsed = {
+        "host": "", "kind": "", "name": "", "ref": "", "router": "", "domain": "",
+        "dry_run": False,
+    }
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -463,7 +491,7 @@ def _parse(argv: list[str]) -> dict | int:
         if arg == "--dry-run":
             parsed["dry_run"] = True
             continue
-        if arg in ("--role", "--robot", "--name", "--ref", "--router"):
+        if arg in ("--role", "--robot", "--name", "--ref", "--router", "--ros-domain"):
             if not rest:
                 exits.fail(f"{arg} needs a value")
                 return exits.USAGE
@@ -482,6 +510,11 @@ def _parse(argv: list[str]) -> dict | int:
                     exits.fail(f"{value!r} is not a router locator (want tcp/<host>:<port>)")
                     return exits.USAGE
                 parsed["router"] = value
+            elif arg == "--ros-domain":
+                if not valid_domain(value):
+                    exits.fail(f"{value!r} is not a ROS domain id (0-232)")
+                    return exits.USAGE
+                parsed["domain"] = value
             else:
                 if not valid_ref(value):
                     exits.fail(f"{value!r} is not a usable git ref")
@@ -525,7 +558,7 @@ def run_adopt(argv: list[str], runner) -> int:
 
     host, kind = str(parsed["host"]), str(parsed["kind"])
     ref = str(parsed["ref"])
-    steps = plan(kind, str(parsed["name"]), ref, str(parsed["router"]))
+    steps = plan(kind, str(parsed["name"]), ref, str(parsed["router"]), str(parsed["domain"]))
 
     if parsed["dry_run"]:
         _print_plan(host, kind, steps, ref)
