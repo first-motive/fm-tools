@@ -50,10 +50,10 @@ TAILNET_TAG = "tag:fm-robot"
 # Bump one when its repo cuts the next prerelease. `--ref` overrides all four for
 # a bench run against a branch, and says so in the plan it prints.
 REFS = {
-    "fm-tools": "v0.9.0-robots.1",
-    "fm-setup": "v0.2.0-robots.1",
+    "fm-tools": "v0.9.0-robots.2",
+    "fm-setup": "v0.2.0-robots.2",
     "fm-comms": "v0.2.0-robots.1",
-    "fm-robot-agent": "v0.1.0-robots.1",
+    "fm-robot-agent": "v0.1.0-robots.2",
 }
 
 # What a ref may look like. Every pinned value is a tag we cut, but `--ref` is

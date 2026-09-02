@@ -279,7 +279,7 @@ USAGE = """usage: fm device <verb> [args...]
   list [--json]              every fleet machine the tailnet knows
   ssh <name> [args...]       connect as the account the machine's role implies
   tunnel <name> <ports>      forward a port over ssh; 8080 or 9090:8080
-  update <name> [--ref R] [--unit U] [--repo P] [--dry-run]
+  update <name> [--ref R] [--unit U] [--repo P] [--no-restart] [--dry-run]
                              move the agent checkout to a ref, restart its unit
   adopt <host> --role robot --robot <kind>
                              layer First Motive onto a robot's vendor OS
@@ -303,7 +303,7 @@ def _remote_path(path: str) -> str:
     return shlex.quote(path)
 
 
-def update_script(repo: str, unit: str, ref: str) -> str:
+def update_script(repo: str, unit: str, ref: str, restart: bool = True) -> str:
     """The one command a robot runs to take a new agent.
 
     Deploying is two steps that have to happen together: move the checkout the
@@ -328,6 +328,15 @@ def update_script(repo: str, unit: str, ref: str) -> str:
     """
     path = _remote_path(repo)
     quoted_unit = shlex.quote(unit)
+    # Not every repo on a robot has a unit behind it. fm-setup is a checkout of
+    # scripts an operator runs, so moving it is a move and nothing else, and
+    # naming a unit that does not exist would fail the deploy at the last step.
+    restart_step = f"sudo -n systemctl restart {quoted_unit}; " if restart else ""
+    state_step = (
+        f'state="$(systemctl is-active {quoted_unit} || true)"; '
+        if restart
+        else 'state="not restarted"; '
+    )
     return (
         "set -eu; "
         f"cd {path}; "
@@ -339,20 +348,24 @@ def update_script(repo: str, unit: str, ref: str) -> str:
         f'git checkout --quiet --detach "refs/remotes/origin/{ref}"; '
         f'else echo "fm: no ref {ref} in $PWD" >&2; exit 1; fi; '
         'after="$(git rev-parse --short HEAD)"; '
-        f"sudo -n systemctl restart {quoted_unit}; "
-        f'state="$(systemctl is-active {quoted_unit} || true)"; '
+        f"{restart_step}"
+        f"{state_step}"
         f'printf "fm: %s %s -> %s at {ref}, {unit} is %s\\n" "$PWD" "$before" "$after" "$state"'
     )
 
 
 def run_update(device: Device, rest: list[str]) -> int:
     """``fm device update`` — move the agent checkout to a ref and restart its unit."""
-    repo, unit, ref, dry = DEFAULT_REPO, DEFAULT_UNIT, "", False
+    repo, unit, ref, dry, restart = DEFAULT_REPO, DEFAULT_UNIT, "", False, True
     index = 0
     while index < len(rest):
         argument = rest[index]
         if argument == "--dry-run":
             dry = True
+            index += 1
+            continue
+        if argument == "--no-restart":
+            restart = False
             index += 1
             continue
         if argument in ("--unit", "--repo", "--ref") and index + 1 < len(rest):
@@ -366,7 +379,8 @@ def run_update(device: Device, rest: list[str]) -> int:
             index += 2
             continue
         exits.fail(
-            f"unreadable argument {argument!r} (use --unit U, --repo P, --ref R, --dry-run)"
+            f"unreadable argument {argument!r} "
+            "(use --unit U, --repo P, --ref R, --no-restart, --dry-run)"
         )
         return exits.USAGE
 
@@ -375,7 +389,7 @@ def run_update(device: Device, rest: list[str]) -> int:
     # than to whatever a branch holds right now.
     ref = ref or ref_for(DEFAULT_PINNED_REPO)
 
-    if not UNIT_PATTERN.match(unit):
+    if restart and not UNIT_PATTERN.match(unit):
         exits.fail(f"{unit!r} is not a fleet unit; this verb restarts fm-* units only")
         return exits.USAGE
     if not REPO_PATTERN.match(repo):
@@ -388,7 +402,7 @@ def run_update(device: Device, rest: list[str]) -> int:
         exits.fail(f"{ref!r} is not a git ref")
         return exits.USAGE
 
-    command = ["ssh", device.target, update_script(repo, unit, ref)]
+    command = ["ssh", device.target, update_script(repo, unit, ref, restart)]
     if dry:
         print(" ".join(shlex.quote(part) for part in command))
         return exits.OK

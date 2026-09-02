@@ -242,6 +242,29 @@ user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
 named the fleet way — phones, personal laptops — are left out rather than listed
 as unknowns nobody can act on.
 
+### Robots Log In As The Vendor's Account
+
+A robot has no appliance account. It runs the vendor's OS with the vendor's
+accounts — `anvil` on the workcell, `user` on the Axol — so `fm device` sends no
+user at all for a robot and lets `~/.ssh/config` decide. That file needs an entry
+per robot, and without one ssh offers your own login name, which exists on
+neither machine: every attempt then fails as a wrong password, however right the
+password is.
+
+```
+# ~/.ssh/config — the tailnet name and its FQDN both, because `fm device`
+# passes the FQDN and a person types the short name.
+Host fm-rob-01 fm-rob-01.*
+  User anvil
+
+Host fm-rob-02 fm-rob-02.*
+  User user
+```
+
+Copy your key across once (`ssh-copy-id fm-rob-01`) and the password goes away
+too. A robot renamed in the Tailscale admin console also changes its host key
+identity for `known_hosts`; `ssh-keygen -R <name>` clears the stale entry.
+
 ### Deploying The Agent
 
 `fm device update` is the deploy path for a robot that is already adopted. It is
@@ -254,6 +277,7 @@ fm device update fm-rob-01                        # move to the ref adopt pinned
 fm device update fm-rob-01 --ref v0.1.0-robots.2  # or to another one
 fm device update fm-rob-01 --ref main             # a bench run against a branch
 fm device update fm-rob-01 --unit fm-zenoh-bridge # another fleet unit
+fm device update fm-rob-01 --repo ~/fm/fm-setup --no-restart   # a repo with no unit
 fm device update fm-rob-01 --dry-run              # print the command, run nothing
 ```
 

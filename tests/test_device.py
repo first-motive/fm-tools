@@ -335,3 +335,45 @@ def test_a_peer_named_the_fleet_way_by_neither_name_is_left_out(tailnet):
 def test_a_renamed_robot_can_be_deployed_to(tailnet, ran):
     assert main(["device", "update", "fm-rob-01"]) == exits.OK
     assert ran[0][1] == "fm-rob-01.tail1234.ts.net"
+
+
+# --- a repo with no unit behind it -------------------------------------------
+
+
+def test_no_restart_moves_the_checkout_and_stops_there(tailnet, ran):
+    """fm-setup is scripts an operator runs; there is no unit to restart."""
+    assert (
+        main(
+            [
+                "device",
+                "update",
+                "fm-rec-01",
+                "--repo",
+                "~/fm/fm-setup",
+                "--unit",
+                "fm-setup",
+                "--no-restart",
+            ]
+        )
+        == exits.OK
+    )
+    script = ran[0][2]
+    assert "checkout --quiet --detach" in script
+    assert "systemctl" not in script
+
+
+def test_no_restart_frees_the_name_from_the_unit_rule(tailnet, ran):
+    """Nothing is restarted, so the fm-* guard has nothing to protect."""
+    assert main(["device", "update", "fm-rec-01", "--unit", "notes", "--no-restart"]) == exits.OK
+    assert ran
+
+
+def test_a_restart_still_takes_a_fleet_unit_only(tailnet, ran):
+    assert main(["device", "update", "fm-rec-01", "--unit", "sshd"]) == exits.USAGE
+    assert ran == []
+
+
+def test_the_pinned_refs_name_the_tags_the_robots_run(tailnet):
+    """A bump here is what moves a robot; a stale entry adopts one to old code."""
+    assert ref_for("fm-robot-agent") == "v0.1.0-robots.2"
+    assert ref_for("fm-setup") == "v0.2.0-robots.2"
