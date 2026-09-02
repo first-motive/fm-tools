@@ -28,7 +28,12 @@ PLATFORMS = ("linux", "macos")
 # Machine roles a setup run can target. The role decides which arguments each
 # repo's installer receives — a Jetson capture rig and a GPU workstation clone
 # the same repos and install them differently.
-ROLES = ("workstation", "jetson")
+#
+# "mac" is the role of a Mac that hosts a service rather than merely driving the
+# fleet from a terminal, so a setup run there has installers to hand arguments
+# to. It matches the role machine.py already accepts on an identity card; the
+# registry was the side that lagged.
+ROLES = ("workstation", "jetson", "mac")
 
 
 def current_platform() -> str:
@@ -229,6 +234,19 @@ REPOS: tuple[Repo, ...] = (
         "fm-robot-agent",
         entry_points=("install.sh",),
         tools=("uv",),
+    ),
+    _repo(
+        # The Hermes agent: it answers Slack DMs by running an allowlisted subset
+        # of the `fm` CLI against a local model. macOS only because it is a host
+        # service installed on the Rune Mac mini under its own `fm` account,
+        # which is the one machine that holds the fleet's workspace and secrets.
+        #
+        # ollama serves the local model; uv runs the agent itself and its tooling.
+        "fm-agent",
+        entry_points=("install.sh", "run.sh"),
+        tools=("uv", "ollama"),
+        platforms=("macos",),
+        role_args=(RoleArgs("mac", ("--role", "mac")),),
     ),
     _repo(
         # The repo that owns the gate cut its own tags by hand, because it

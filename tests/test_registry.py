@@ -6,6 +6,7 @@ from fm_tools.cli.registry import (
     CHECK_KINDS,
     PLATFORMS,
     REPOS,
+    ROLES,
     HealthCheck,
     Repo,
     RoleArgs,
@@ -13,7 +14,15 @@ from fm_tools.cli.registry import (
     repo_names,
 )
 
-EXPECTED = {"fm-ai", "fm-setup", "fm-ros2", "fm-desktop", "fm-robot-agent", "fm-tools"}
+EXPECTED = {
+    "fm-ai",
+    "fm-setup",
+    "fm-ros2",
+    "fm-desktop",
+    "fm-robot-agent",
+    "fm-agent",
+    "fm-tools",
+}
 
 
 def test_registry_covers_every_sibling_repo():
@@ -119,3 +128,24 @@ def test_the_robot_agent_is_registered_on_every_platform():
     """Its agent half is Linux-only; the `robot` verb it mounts is typed on a Mac."""
     agent = next(repo for repo in REPOS if repo.name == "fm-robot-agent")
     assert agent.platforms == ()
+
+
+def test_the_hermes_agent_is_macos_only_and_carries_the_mac_role():
+    """It is a host service on the Rune Mac mini, so no other platform installs it."""
+    agent = next(repo for repo in REPOS if repo.name == "fm-agent")
+    assert agent.platforms == ("macos",)
+    assert agent.applies_to("macos")
+    assert not agent.applies_to("linux")
+    assert agent.entry_points == ("install.sh", "run.sh")
+    assert agent.args_for("mac") == ["--role", "mac"]
+    assert {check.target for check in agent.checks if check.kind == "tool"} == {
+        "git",
+        "uv",
+        "ollama",
+    }
+
+
+def test_mac_is_an_accepted_role():
+    assert "mac" in ROLES
+    assert RoleArgs("mac", ("--role", "mac")).args == ("--role", "mac")
+
