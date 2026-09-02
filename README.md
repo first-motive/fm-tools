@@ -86,7 +86,7 @@ Verbs that act, each by handing the work to a repo's own script:
 | `fm reset <repo> [args…]` | Runs that repo's `install.sh reset` — teardown, in the repo's own words. |
 | `fm uninstall <repo> [args…]` | Runs that repo's `install.sh uninstall`. |
 | `fm setup [--role R] [--dry-run]` | Clones what is missing, adopts existing clones in place, runs each installer, then prints `fm doctor`'s verdict. |
-| `fm device list\|ssh\|tunnel\|adopt` | The fleet: which machines exist, connecting to one, forwarding a port off one, and layering First Motive onto a robot that arrives on a vendor OS. |
+| `fm device list\|ssh\|tunnel\|update\|adopt` | The fleet: which machines exist, connecting to one, forwarding a port off one, deploying the agent onto one, and layering First Motive onto a robot that arrives on a vendor OS. |
 | `fm diagram list\|render\|check\|watch` | Every diagram in the workspace, and the per-repo renderer behind each one. |
 | `fm run -- <command>` | Runs a raw command and records it as a missing verb. |
 | `fm release --repo R --cut -- [args…]` | Runs that repo's release script, but only once CI is green on the commit a tag would land on. |
@@ -224,6 +224,7 @@ fm device list --json                 # every fleet machine, its role, its ssh t
 fm device ssh fm-rec-01               # connects as the account the role implies
 fm device ssh fm-rec-01 -t journalctl -u fm   # everything after the name is ssh's
 fm device tunnel fm-rec-01 9090:8080  # forward localhost:9090 to its 8080
+fm device update fm-rob-01            # pull the agent checkout, restart its unit
 ```
 
 No hostname, address, or account is written down in this repo. A machine's role
@@ -233,6 +234,31 @@ appliance account, while a `mac` is somebody's laptop, so its target carries no
 user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
 named the fleet way — phones, personal laptops — are left out rather than listed
 as unknowns nobody can act on.
+
+### Deploying The Agent
+
+`fm device update` is the deploy path for a robot that is already adopted. It is
+two steps that have to happen together — pull the checkout the unit runs from,
+then restart the unit so it runs what was pulled. A pull without the restart
+leaves a robot answering the old verb set from new code on disk.
+
+```bash
+fm device update fm-rob-01                        # the agent, at its usual path
+fm device update fm-rob-01 --unit fm-zenoh-bridge # another fleet unit
+fm device update fm-rob-01 --dry-run              # print the command, run nothing
+```
+
+Three things it will not do. It pulls `--ff-only`, because a robot is not a place
+to resolve a merge: a diverged checkout stops and says so. It restarts `fm-*`
+units only, which is exactly what fm-setup's `robot-sudo` grants — a name outside
+that shape is refused here rather than after an ssh. And its `sudo -n` never
+prompts: where the grant is in place it is silent, and where it is not it fails
+immediately with sudo's own message instead of hanging on a password prompt no
+caller is watching.
+
+Run `./run.sh robot-sudo` on the robot once (see fm-setup) to put that grant in
+place. Without it, this verb still works — it just asks for a password, which
+means it only works when a person is there to type one.
 
 ### Adopting A Robot
 
