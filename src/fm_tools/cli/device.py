@@ -27,6 +27,8 @@ whatever that person's login name is, so the target carries no user at all and
 from __future__ import annotations
 
 import json as jsonlib
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -233,16 +235,115 @@ def _tunnel_ports(spec: str) -> tuple[int, int] | None:
     return (ports[0], ports[-1])
 
 
+#: Where a robot keeps the agent, and which unit runs it. Both are what
+#: fm-robot-agent's own installer lays down, and both are overridable for a host
+#: that put the checkout somewhere else.
+DEFAULT_REPO = "~/fm/fm-robot-agent"
+DEFAULT_UNIT = "fm-robot-agent"
+
+#: A unit name this verb will restart. Narrow on purpose: the sudoers rule
+#: fm-setup's `robot-sudo` writes grants exactly the fleet's own units, so a name
+#: outside that shape would fail on the robot after a password prompt nobody is
+#: there to answer. Checked here to say so before the ssh rather than after.
+UNIT_PATTERN = re.compile(r"^fm-[a-z0-9-]+$")
+
+#: A checkout path this verb will pull in. No shell metacharacters, because the
+#: path is interpolated into a remote shell command — `shlex.quote` handles the
+#: quoting, and this refuses the input that would make quoting the only defence.
+REPO_PATTERN = re.compile(r"^[~/][A-Za-z0-9._/-]*$")
+
 USAGE = """usage: fm device <verb> [args...]
 
   list [--json]              every fleet machine the tailnet knows
   ssh <name> [args...]       connect as the account the machine's role implies
   tunnel <name> <ports>      forward a port over ssh; 8080 or 9090:8080
+  update <name> [--unit U] [--repo P] [--dry-run]
+                             pull the agent checkout and restart its unit
   adopt <host> --role robot --robot <kind>
                              layer First Motive onto a robot's vendor OS
 
 The registry is the tailnet plus each machine's identity card. No hostname,
 address, or account is written down here."""
+
+
+
+def _remote_path(path: str) -> str:
+    """A path as the remote shell should read it, tilde included.
+
+    ``shlex.quote`` is what keeps a path from becoming a second command, and it
+    also stops the remote shell expanding a leading ``~`` — a quoted
+    ``'~/fm/fm-robot-agent'`` is a directory named tilde, which no robot has. So
+    the home half is handed to the shell as ``$HOME`` and only the rest is
+    quoted.
+    """
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
+def update_script(repo: str, unit: str) -> str:
+    """The one command a robot runs to take a new agent.
+
+    Deploying is two steps that have to happen together: pull the checkout the
+    unit runs from, then restart the unit so it runs what was pulled. A pull
+    without the restart leaves a robot answering the old verb set from new code
+    on disk, which is the confusing half-state this verb exists to prevent.
+
+    ``--ff-only`` because a robot is not a place to resolve a merge. A checkout
+    that has diverged stops here and says so, which is a person's problem to
+    look at rather than something to reconcile over ssh.
+
+    ``sudo -n`` never prompts. Where fm-setup's ``robot-sudo`` has granted this
+    unit, it succeeds silently; where it has not, it fails immediately with
+    sudo's own message instead of hanging on a password prompt that no caller is
+    watching.
+    """
+    quoted_repo = _remote_path(repo)
+    quoted_unit = shlex.quote(unit)
+    return (
+        "set -eu; "
+        f"cd {quoted_repo}; "
+        'before="$(git rev-parse --short HEAD)"; '
+        "git pull --ff-only; "
+        'after="$(git rev-parse --short HEAD)"; '
+        f"sudo -n systemctl restart {quoted_unit}; "
+        f'state="$(systemctl is-active {quoted_unit} || true)"; '
+        f'printf "fm: %s %s -> %s, {unit} is %s\\n" "$PWD" "$before" "$after" "$state"'
+    )
+
+
+def run_update(device: Device, rest: list[str]) -> int:
+    """``fm device update`` — pull the agent checkout and restart its unit."""
+    repo, unit, dry = DEFAULT_REPO, DEFAULT_UNIT, False
+    index = 0
+    while index < len(rest):
+        argument = rest[index]
+        if argument == "--dry-run":
+            dry = True
+            index += 1
+            continue
+        if argument in ("--unit", "--repo") and index + 1 < len(rest):
+            if argument == "--unit":
+                unit = rest[index + 1]
+            else:
+                repo = rest[index + 1]
+            index += 2
+            continue
+        exits.fail(f"unreadable argument {argument!r} (use --unit U, --repo P, --dry-run)")
+        return exits.USAGE
+
+    if not UNIT_PATTERN.match(unit):
+        exits.fail(f"{unit!r} is not a fleet unit; this verb restarts fm-* units only")
+        return exits.USAGE
+    if not REPO_PATTERN.match(repo):
+        exits.fail(f"{repo!r} is not a path this verb will pull in")
+        return exits.USAGE
+
+    command = ["ssh", device.target, update_script(repo, unit)]
+    if dry:
+        print(" ".join(shlex.quote(part) for part in command))
+        return exits.OK
+    return _run(command)
 
 
 def _resolve(name: str) -> Device | int:
@@ -272,10 +373,10 @@ def run_device(argv: list[str]) -> int:
         print(USAGE)
         return exits.OK if verb else exits.USAGE
 
-    if verb not in ("list", "ssh", "tunnel", "adopt"):
-        exits.fail(f"unknown device verb {verb!r} (use list|ssh|tunnel|adopt)")
+    if verb not in ("list", "ssh", "tunnel", "update", "adopt"):
+        exits.fail(f"unknown device verb {verb!r} (use list|ssh|tunnel|update|adopt)")
         return exits.USAGE
-    if verb in ("ssh", "tunnel") and not rest:
+    if verb in ("ssh", "tunnel", "update") and not rest:
         exits.fail(f"fm device {verb} needs a machine name")
         return exits.USAGE
 
@@ -307,6 +408,9 @@ def run_device(argv: list[str]) -> int:
         # Everything after the name is ssh's, forwarded untouched — the same
         # contract a mounted repo verb gets.
         return _run(["ssh", resolved.target, *rest[1:]])
+
+    if verb == "update":
+        return run_update(resolved, rest[1:])
 
     if len(rest) < 2:
         exits.fail("fm device tunnel needs a port spec: 8080, or 9090:8080")

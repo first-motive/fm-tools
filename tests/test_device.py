@@ -170,3 +170,90 @@ def test_a_robot_carries_no_ssh_user():
         name="fm-rob-01", role="robot", host="fm-rob-01.tail1234.ts.net", online=True, addresses=()
     )
     assert robot.target == "fm-rob-01.tail1234.ts.net"
+
+
+# --- update ------------------------------------------------------------------
+
+
+def test_update_pulls_the_checkout_and_restarts_the_unit(tailnet, ran):
+    """Two steps that have to happen together: new code on disk, unit running it."""
+    assert main(["device", "update", "fm-rec-01"]) == exits.OK
+    script = ran[0][2]
+    assert ran[0][:2] == ["ssh", "fm@fm-rec-01.tail1234.ts.net"]
+    assert "git pull --ff-only" in script
+    assert "systemctl restart fm-robot-agent" in script
+
+
+def test_update_never_waits_on_a_password(tailnet, ran):
+    """`sudo -n` fails with sudo's own message rather than hanging unattended."""
+    main(["device", "update", "fm-rec-01"])
+    assert "sudo -n systemctl restart" in ran[0][2]
+
+
+def test_update_refuses_to_merge_on_a_robot(tailnet, ran):
+    """A diverged checkout is a person's problem, not something to resolve over ssh."""
+    main(["device", "update", "fm-rec-01"])
+    assert "--ff-only" in ran[0][2]
+
+
+def test_update_reports_the_shas_it_moved_between(tailnet, ran):
+    main(["device", "update", "fm-rec-01"])
+    script = ran[0][2]
+    assert 'before="$(git rev-parse --short HEAD)"' in script
+    assert 'after="$(git rev-parse --short HEAD)"' in script
+    assert "systemctl is-active" in script
+
+
+def test_update_expands_the_home_half_of_the_path(tailnet, ran):
+    """A quoted `~` is a directory named tilde, which no robot has."""
+    main(["device", "update", "fm-rec-01"])
+    assert 'cd "$HOME"/fm/fm-robot-agent' in ran[0][2]
+
+
+def test_update_takes_another_unit_and_checkout(tailnet, ran):
+    main(
+        ["device", "update", "fm-rec-01", "--unit", "fm-zenoh-bridge", "--repo", "/opt/fm/agent"]
+    )
+    script = ran[0][2]
+    assert "systemctl restart fm-zenoh-bridge" in script
+    assert "cd /opt/fm/agent" in script
+
+
+def test_update_restarts_fleet_units_only(tailnet, ran):
+    """The robot's sudoers rule grants fm-* units; anything else prompts and hangs."""
+    assert main(["device", "update", "fm-rec-01", "--unit", "sshd"]) == exits.USAGE
+    assert ran == []
+
+
+def test_update_refuses_a_unit_carrying_a_command(tailnet, ran):
+    assert (
+        main(["device", "update", "fm-rec-01", "--unit", "fm-agent; rm -rf /"]) == exits.USAGE
+    )
+    assert ran == []
+
+
+def test_update_refuses_a_path_carrying_a_command(tailnet, ran):
+    assert main(["device", "update", "fm-rec-01", "--repo", "~/fm; rm -rf /"]) == exits.USAGE
+    assert ran == []
+
+
+def test_update_refuses_an_argument_it_does_not_know(tailnet, ran):
+    assert main(["device", "update", "fm-rec-01", "--force"]) == exits.USAGE
+    assert ran == []
+
+
+def test_update_needs_a_machine_name(tailnet, ran):
+    assert main(["device", "update"]) == exits.USAGE
+    assert ran == []
+
+
+def test_update_will_not_reach_an_offline_machine(tailnet, ran):
+    assert main(["device", "update", "fm-rec-02"]) == exits.PRECONDITION
+    assert ran == []
+
+
+def test_a_dry_run_prints_the_command_and_runs_nothing(tailnet, ran, capsys):
+    assert main(["device", "update", "fm-rec-01", "--dry-run"]) == exits.OK
+    printed = capsys.readouterr().out
+    assert "ssh" in printed and "systemctl restart fm-robot-agent" in printed
+    assert ran == []
