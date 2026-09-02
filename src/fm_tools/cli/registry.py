@@ -173,7 +173,7 @@ def _repo(
     )
 
 
-# The four First Motive repos, in dependency-agnostic listing order. Entry points
+# The First Motive repos, in dependency-agnostic listing order. Entry points
 # name each repo's own bootstrap front door (the fm-bootstrap contract), which
 # ``fm install`` and ``fm setup`` delegate to.
 #
@@ -217,6 +217,19 @@ REPOS: tuple[Repo, ...] = (
     # A native macOS app: there is no Linux build to install on a workstation or
     # a Jetson, so a setup run there skips it rather than failing on it.
     _repo("fm-desktop", entry_points=("install.sh", "run.sh"), platforms=("macos",)),
+    _repo(
+        # Two halves, one repo, so no platform declaration: the agent runs on a
+        # robot's own Linux host under systemd, and the `robot` verb it mounts
+        # is the operator's client, which runs from the Mac the fleet is driven
+        # from. A repo declared linux-only would leave that verb unmounted on
+        # exactly the machine that types it.
+        #
+        # uv, because both halves run through it — the unit's ExecStart and
+        # scripts/run/robot.sh are both `uv run`.
+        "fm-robot-agent",
+        entry_points=("install.sh",),
+        tools=("uv",),
+    ),
     _repo(
         # The repo that owns the gate cut its own tags by hand, because it
         # declared no script for --cut to delegate to (#23). It does now, so

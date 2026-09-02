@@ -217,7 +217,9 @@ RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
 # fm-tools left this set when it got its own cut-release.sh: the repo that owns
 # the gate was cutting its tags by hand, which is the half of #23 that outlived
 # the fm-setup fix.
-NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop"}
+# fm-robot-agent joins them: it is versioned by tag on the robot hosts that
+# pull it, and has no cut script for --cut to delegate to.
+NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop", "fm-robot-agent"}
 
 
 def test_a_declared_release_script_is_the_one_that_cuts_a_tag():
