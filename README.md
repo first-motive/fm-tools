@@ -277,7 +277,7 @@ fm device update fm-rob-01                        # move to the ref adopt pinned
 fm device update fm-rob-01 --ref v0.1.0-robots.2  # or to another one
 fm device update fm-rob-01 --ref main             # a bench run against a branch
 fm device update fm-rob-01 --unit fm-zenoh-bridge # another fleet unit
-fm device update fm-rob-01 --repo ~/fm/fm-setup --no-restart   # a repo with no unit
+fm device update fm-rob-01 --repo '~/fm/fm-setup' --no-restart # a repo with no unit
 fm device update fm-rob-01 --dry-run              # print the command, run nothing
 ```
 
@@ -285,9 +285,13 @@ It checks out a ref; it does not pull. Every repo `fm device adopt` puts on a
 robot is checked out detached at a pinned tag, precisely so a push to a default
 branch cannot reach a machine that runs it with sudo — and `git pull` on a
 detached HEAD fails with "you are not currently on a branch". So a deploy is a
-move between two refs somebody named, and the default is the one `adopt` pins,
-which means a plain `fm device update` moves a robot to the version the fleet
-says it should run.
+move between two refs somebody named, and the default is the one `adopt` pins
+for the repo being moved — read off the checkout's own directory name — which
+means a plain `fm device update` moves a robot to the version the fleet says it
+should run.
+
+Quote a `~` path: your own shell expands it to your Mac's home otherwise, and the
+robot has no such directory.
 
 Two more things it will not do. It restarts `fm-*` units only, which is exactly
 what fm-setup's `robot-sudo` grants — a name outside that shape is refused here

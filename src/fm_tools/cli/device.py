@@ -354,6 +354,21 @@ def update_script(repo: str, unit: str, ref: str, restart: bool = True) -> str:
     )
 
 
+def _pinned_ref(repo: str) -> str:
+    """The ref adopt pins the repo at this path, falling back to the agent's.
+
+    A checkout's directory is named for the repo in it — that is how adopt lays
+    every one of them down — so the last path segment is the lookup. A path
+    naming no repo the fleet pins gets the agent's ref, which is what a plain
+    `fm device update` has always meant.
+    """
+    name = repo.rstrip("/").rsplit("/", 1)[-1]
+    try:
+        return ref_for(name)
+    except KeyError:
+        return ref_for(DEFAULT_PINNED_REPO)
+
+
 def run_update(device: Device, rest: list[str]) -> int:
     """``fm device update`` — move the agent checkout to a ref and restart its unit."""
     repo, unit, ref, dry, restart = DEFAULT_REPO, DEFAULT_UNIT, "", False, True
@@ -384,10 +399,11 @@ def run_update(device: Device, rest: list[str]) -> int:
         )
         return exits.USAGE
 
-    # The default is the ref adopt pinned this repo at, so a plain `fm device
-    # update` moves a robot to the version the fleet says it should run rather
-    # than to whatever a branch holds right now.
-    ref = ref or ref_for(DEFAULT_PINNED_REPO)
+    # The default ref belongs to the repo being moved, not to the agent: pointing
+    # fm-setup at the agent's tag asks a robot for a ref that repo has never
+    # carried, which is what `--repo ~/fm/fm-setup` did until it was told
+    # otherwise. The checkout's own directory name is what says which repo it is.
+    ref = ref or _pinned_ref(repo)
 
     if restart and not UNIT_PATTERN.match(unit):
         exits.fail(f"{unit!r} is not a fleet unit; this verb restarts fm-* units only")

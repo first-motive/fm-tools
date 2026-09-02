@@ -377,3 +377,19 @@ def test_the_pinned_refs_name_the_tags_the_robots_run(tailnet):
     """A bump here is what moves a robot; a stale entry adopts one to old code."""
     assert ref_for("fm-robot-agent") == "v0.1.0-robots.2"
     assert ref_for("fm-setup") == "v0.2.0-robots.2"
+
+
+def test_the_default_ref_belongs_to_the_repo_being_moved(tailnet, ran):
+    """fm-setup at the agent's tag asks for a ref that repo has never carried."""
+    main(["device", "update", "fm-rec-01", "--repo", "~/fm/fm-setup", "--no-restart"])
+    assert f"refs/tags/{ref_for('fm-setup')}" in ran[0][2]
+
+
+def test_a_path_naming_no_pinned_repo_still_gets_the_agents_ref(tailnet, ran):
+    main(["device", "update", "fm-rec-01", "--repo", "/opt/somewhere", "--no-restart"])
+    assert f"refs/tags/{ref_for('fm-robot-agent')}" in ran[0][2]
+
+
+def test_a_trailing_slash_still_names_the_repo(tailnet, ran):
+    main(["device", "update", "fm-rec-01", "--repo", "~/fm/fm-setup/", "--no-restart"])
+    assert f"refs/tags/{ref_for('fm-setup')}" in ran[0][2]
