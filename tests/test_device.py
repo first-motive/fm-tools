@@ -26,6 +26,14 @@ STATUS = {
             "TailscaleIPs": ["100.64.0.3"],
             "Online": False,
         },
+        # A robot: the tailnet was told fm-rob-01, while the vendor's OS still
+        # calls itself anvil-workcell. Renaming that host is not ours to do.
+        "key-d": {
+            "HostName": "anvil-workcell",
+            "DNSName": "fm-rob-01.tail1234.ts.net.",
+            "TailscaleIPs": ["100.64.0.5"],
+            "Online": True,
+        },
         "key-c": {
             "HostName": "someones-iphone",
             "DNSName": "someones-iphone.tail1234.ts.net.",
@@ -63,7 +71,12 @@ def test_the_role_is_derived_from_the_name():
 
 
 def test_only_fleet_machines_are_listed(tailnet):
-    assert [entry.name for entry in device.devices()] == ["fm-ws-01", "fm-rec-01", "fm-rec-02"]
+    assert [entry.name for entry in device.devices()] == [
+        "fm-ws-01",
+        "fm-rec-01",
+        "fm-rec-02",
+        "fm-rob-01",
+    ]
 
 
 def test_the_ssh_user_follows_the_role(tailnet):
@@ -139,7 +152,7 @@ def test_a_malformed_port_spec_is_a_usage_error(tailnet, capsys):
 def test_device_list_json_names_every_machine(tailnet, capsys):
     assert main(["device", "list", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
-    assert [row["name"] for row in rows] == ["fm-ws-01", "fm-rec-01", "fm-rec-02"]
+    assert [row["name"] for row in rows] == ["fm-ws-01", "fm-rec-01", "fm-rec-02", "fm-rob-01"]
     assert rows[1]["target"] == "fm@fm-rec-01.tail1234.ts.net"
 
 
@@ -257,3 +270,34 @@ def test_a_dry_run_prints_the_command_and_runs_nothing(tailnet, ran, capsys):
     printed = capsys.readouterr().out
     assert "ssh" in printed and "systemctl restart fm-robot-agent" in printed
     assert ran == []
+
+
+# --- the name the tailnet knows ----------------------------------------------
+
+
+def test_a_robot_is_found_by_the_name_the_tailnet_was_told(tailnet):
+    """The Anvil answers to fm-rob-01 while its own OS says anvil-workcell."""
+    found = device.find("fm-rob-01")
+    assert found is not None
+    assert found.role == "robot"
+    assert found.host == "fm-rob-01.tail1234.ts.net"
+
+
+def test_the_vendors_own_hostname_is_not_the_fleet_name(tailnet):
+    assert device.find("anvil-workcell") is None
+
+
+def test_a_machine_whose_names_agree_is_unchanged(tailnet):
+    """fm-setup sets both on a machine we provision, and nothing here moves."""
+    found = device.find("fm-rec-01")
+    assert found is not None and found.host == "fm-rec-01.tail1234.ts.net"
+
+
+def test_a_peer_named_the_fleet_way_by_neither_name_is_left_out(tailnet):
+    """A tailnet carries phones and personal laptops; they are not fleet machines."""
+    assert all(found.name != "someones-iphone" for found in device.devices())
+
+
+def test_a_renamed_robot_can_be_deployed_to(tailnet, ran):
+    assert main(["device", "update", "fm-rob-01"]) == exits.OK
+    assert ran[0][1] == "fm-rob-01.tail1234.ts.net"

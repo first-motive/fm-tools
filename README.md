@@ -227,9 +227,16 @@ fm device tunnel fm-rec-01 9090:8080  # forward localhost:9090 to its 8080
 fm device update fm-rob-01            # pull the agent checkout, restart its unit
 ```
 
-No hostname, address, or account is written down in this repo. A machine's role
-comes from the `fm-<abbrev>-<nn>` shape the card's schema pins (`fm-rec-01` is a
-jetson), and the user follows the role: the provisioned machines run as the
+No hostname, address, or account is written down in this repo. A machine's name
+is the one the tailnet was told, falling back to the machine's own hostname when
+the tailnet has nothing fleet-shaped — they are different facts, and on a robot
+they disagree: the Anvil workcell answers to `fm-rob-01` on the tailnet while its
+own OS still calls itself `anvil-workcell`, and renaming a vendor's host is not a
+change this fleet gets to make. A rename in the Tailscale admin console is
+therefore enough to bring a robot into the registry.
+
+A machine's role comes from the `fm-<abbrev>-<nn>` shape the card's schema pins
+(`fm-rec-01` is a jetson), and the user follows the role: the provisioned machines run as the
 appliance account, while a `mac` is somebody's laptop, so its target carries no
 user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
 named the fleet way — phones, personal laptops — are left out rather than listed
