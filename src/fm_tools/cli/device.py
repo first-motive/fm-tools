@@ -125,11 +125,28 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
     the ones named the way the card's schema requires are fleet machines, and the
     rest are left out rather than listed as unknowns nobody can act on.
     """
-    name = str(entry.get("HostName") or "")
+    dns = str(entry.get("DNSName") or "").rstrip(".")
+    hostname = str(entry.get("HostName") or "")
+
+    # The tailnet name wins over the machine's own hostname.
+    #
+    # They are different facts. DNSName is the name the tailnet was told, which
+    # is what an admin sets and what ssh resolves; HostName is whatever the OS
+    # calls itself. On a machine we provision the two agree, because fm-setup
+    # sets both. On a robot they do not: the Anvil workcell answers to
+    # `fm-rob-01` on the tailnet while its own OS still says `anvil-workcell`,
+    # and renaming a vendor's host is not a change this fleet gets to make.
+    #
+    # So a rename in the tailnet admin console is enough to bring a robot into
+    # the registry, which is the only lever that exists for a machine whose OS
+    # belongs to somebody else.
+    name = dns.split(".")[0] if dns else ""
     role = role_of(name)
     if not role:
+        name = hostname
+        role = role_of(name)
+    if not role:
         return None
-    dns = str(entry.get("DNSName") or "").rstrip(".")
     addresses = tuple(str(ip) for ip in entry.get("TailscaleIPs") or ())
     host = dns or (addresses[0] if addresses else name)
     return Device(
