@@ -38,7 +38,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import exits
-from .adopt import run_adopt
+from .adopt import REF_PATTERN, ref_for, run_adopt
 from .machine import NAME_PATTERN, CardError, read_card
 from .payload import emit
 
@@ -258,6 +258,11 @@ def _tunnel_ports(spec: str) -> tuple[int, int] | None:
 DEFAULT_REPO = "~/fm/fm-robot-agent"
 DEFAULT_UNIT = "fm-robot-agent"
 
+#: The repo whose pinned ref a plain `fm device update` moves to. Named so the
+#: default ref comes from the same table adopt pins, rather than from a second
+#: copy of it here.
+DEFAULT_PINNED_REPO = "fm-robot-agent"
+
 #: A unit name this verb will restart. Narrow on purpose: the sudoers rule
 #: fm-setup's `robot-sudo` writes grants exactly the fleet's own units, so a name
 #: outside that shape would fail on the robot after a password prompt nobody is
@@ -274,8 +279,8 @@ USAGE = """usage: fm device <verb> [args...]
   list [--json]              every fleet machine the tailnet knows
   ssh <name> [args...]       connect as the account the machine's role implies
   tunnel <name> <ports>      forward a port over ssh; 8080 or 9090:8080
-  update <name> [--unit U] [--repo P] [--dry-run]
-                             pull the agent checkout and restart its unit
+  update <name> [--ref R] [--unit U] [--repo P] [--dry-run]
+                             move the agent checkout to a ref, restart its unit
   adopt <host> --role robot --robot <kind>
                              layer First Motive onto a robot's vendor OS
 
@@ -298,40 +303,51 @@ def _remote_path(path: str) -> str:
     return shlex.quote(path)
 
 
-def update_script(repo: str, unit: str) -> str:
+def update_script(repo: str, unit: str, ref: str) -> str:
     """The one command a robot runs to take a new agent.
 
-    Deploying is two steps that have to happen together: pull the checkout the
-    unit runs from, then restart the unit so it runs what was pulled. A pull
+    Deploying is two steps that have to happen together: move the checkout the
+    unit runs from, then restart the unit so it runs what was moved. A move
     without the restart leaves a robot answering the old verb set from new code
     on disk, which is the confusing half-state this verb exists to prevent.
 
-    ``--ff-only`` because a robot is not a place to resolve a merge. A checkout
-    that has diverged stops here and says so, which is a person's problem to
-    look at rather than something to reconcile over ssh.
+    A checkout, not a pull. Every repo `fm device adopt` puts on a robot is
+    checked out detached at a pinned tag, precisely so a push to a default branch
+    cannot reach a machine that runs it with sudo — and `git pull` on a detached
+    HEAD fails with "you are not currently on a branch". So this fetches and
+    checks out a named ref the same way adopt does, which keeps a deploy a move
+    between two refs somebody named rather than whatever a branch holds today.
+
+    A tag is resolved before a branch of the same name, again as adopt does: if
+    both exist, the tag is the reviewed one.
 
     ``sudo -n`` never prompts. Where fm-setup's ``robot-sudo`` has granted this
     unit, it succeeds silently; where it has not, it fails immediately with
     sudo's own message instead of hanging on a password prompt that no caller is
     watching.
     """
-    quoted_repo = _remote_path(repo)
+    path = _remote_path(repo)
     quoted_unit = shlex.quote(unit)
     return (
         "set -eu; "
-        f"cd {quoted_repo}; "
+        f"cd {path}; "
         'before="$(git rev-parse --short HEAD)"; '
-        "git pull --ff-only; "
+        "git fetch --tags --force --prune --quiet origin; "
+        f'if git rev-parse --verify --quiet "refs/tags/{ref}" >/dev/null; then '
+        f'git checkout --quiet --detach "refs/tags/{ref}"; '
+        f'elif git rev-parse --verify --quiet "refs/remotes/origin/{ref}" >/dev/null; then '
+        f'git checkout --quiet --detach "refs/remotes/origin/{ref}"; '
+        f'else echo "fm: no ref {ref} in $PWD" >&2; exit 1; fi; '
         'after="$(git rev-parse --short HEAD)"; '
         f"sudo -n systemctl restart {quoted_unit}; "
         f'state="$(systemctl is-active {quoted_unit} || true)"; '
-        f'printf "fm: %s %s -> %s, {unit} is %s\\n" "$PWD" "$before" "$after" "$state"'
+        f'printf "fm: %s %s -> %s at {ref}, {unit} is %s\\n" "$PWD" "$before" "$after" "$state"'
     )
 
 
 def run_update(device: Device, rest: list[str]) -> int:
-    """``fm device update`` — pull the agent checkout and restart its unit."""
-    repo, unit, dry = DEFAULT_REPO, DEFAULT_UNIT, False
+    """``fm device update`` — move the agent checkout to a ref and restart its unit."""
+    repo, unit, ref, dry = DEFAULT_REPO, DEFAULT_UNIT, "", False
     index = 0
     while index < len(rest):
         argument = rest[index]
@@ -339,15 +355,25 @@ def run_update(device: Device, rest: list[str]) -> int:
             dry = True
             index += 1
             continue
-        if argument in ("--unit", "--repo") and index + 1 < len(rest):
+        if argument in ("--unit", "--repo", "--ref") and index + 1 < len(rest):
+            value = rest[index + 1]
             if argument == "--unit":
-                unit = rest[index + 1]
+                unit = value
+            elif argument == "--repo":
+                repo = value
             else:
-                repo = rest[index + 1]
+                ref = value
             index += 2
             continue
-        exits.fail(f"unreadable argument {argument!r} (use --unit U, --repo P, --dry-run)")
+        exits.fail(
+            f"unreadable argument {argument!r} (use --unit U, --repo P, --ref R, --dry-run)"
+        )
         return exits.USAGE
+
+    # The default is the ref adopt pinned this repo at, so a plain `fm device
+    # update` moves a robot to the version the fleet says it should run rather
+    # than to whatever a branch holds right now.
+    ref = ref or ref_for(DEFAULT_PINNED_REPO)
 
     if not UNIT_PATTERN.match(unit):
         exits.fail(f"{unit!r} is not a fleet unit; this verb restarts fm-* units only")
@@ -355,8 +381,14 @@ def run_update(device: Device, rest: list[str]) -> int:
     if not REPO_PATTERN.match(repo):
         exits.fail(f"{repo!r} is not a path this verb will pull in")
         return exits.USAGE
+    # The ref lands inside a shell command running on a robot, and is checked
+    # rather than quoted for the same reason adopt checks its own: a git ref is a
+    # git ref, and no legitimate one holds a quote, a semicolon, or a space.
+    if not REF_PATTERN.match(ref):
+        exits.fail(f"{ref!r} is not a git ref")
+        return exits.USAGE
 
-    command = ["ssh", device.target, update_script(repo, unit)]
+    command = ["ssh", device.target, update_script(repo, unit, ref)]
     if dry:
         print(" ".join(shlex.quote(part) for part in command))
         return exits.OK

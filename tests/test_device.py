@@ -5,6 +5,7 @@ import json
 import pytest
 
 from fm_tools.cli import device, exits, main
+from fm_tools.cli.adopt import ref_for
 
 STATUS = {
     "Self": {
@@ -188,12 +189,13 @@ def test_a_robot_carries_no_ssh_user():
 # --- update ------------------------------------------------------------------
 
 
-def test_update_pulls_the_checkout_and_restarts_the_unit(tailnet, ran):
+def test_update_moves_the_checkout_and_restarts_the_unit(tailnet, ran):
     """Two steps that have to happen together: new code on disk, unit running it."""
     assert main(["device", "update", "fm-rec-01"]) == exits.OK
     script = ran[0][2]
     assert ran[0][:2] == ["ssh", "fm@fm-rec-01.tail1234.ts.net"]
-    assert "git pull --ff-only" in script
+    assert "git fetch --tags --force" in script
+    assert "checkout --quiet --detach" in script
     assert "systemctl restart fm-robot-agent" in script
 
 
@@ -203,10 +205,42 @@ def test_update_never_waits_on_a_password(tailnet, ran):
     assert "sudo -n systemctl restart" in ran[0][2]
 
 
-def test_update_refuses_to_merge_on_a_robot(tailnet, ran):
-    """A diverged checkout is a person's problem, not something to resolve over ssh."""
+def test_update_never_pulls(tailnet, ran):
+    """Adopt leaves every robot checkout detached at a tag; `git pull` fails there."""
     main(["device", "update", "fm-rec-01"])
-    assert "--ff-only" in ran[0][2]
+    assert "git pull" not in ran[0][2]
+
+
+def test_update_defaults_to_the_ref_adopt_pinned(tailnet, ran):
+    """A plain update moves a robot to the version the fleet says it should run."""
+    main(["device", "update", "fm-rec-01"])
+    assert f"refs/tags/{ref_for('fm-robot-agent')}" in ran[0][2]
+
+
+def test_update_takes_another_ref(tailnet, ran):
+    main(["device", "update", "fm-rec-01", "--ref", "main"])
+    script = ran[0][2]
+    assert "refs/remotes/origin/main" in script
+    assert "refs/tags/main" in script  # a tag of that name still wins, as adopt has it
+
+
+def test_a_tag_is_resolved_before_a_branch_of_the_same_name(tailnet, ran):
+    """If both exist, the tag is the reviewed one."""
+    main(["device", "update", "fm-rec-01", "--ref", "v9.9.9"])
+    script = ran[0][2]
+    assert script.index("refs/tags/v9.9.9") < script.index("refs/remotes/origin/v9.9.9")
+
+
+def test_update_refuses_a_ref_carrying_a_command(tailnet, ran):
+    assert main(["device", "update", "fm-rec-01", "--ref", "main; rm -rf /"]) == exits.USAGE
+    assert ran == []
+
+
+def test_a_missing_ref_stops_before_the_restart(tailnet, ran):
+    """A robot that cannot reach the named ref keeps running what it has."""
+    main(["device", "update", "fm-rec-01"])
+    script = ran[0][2]
+    assert script.index("exit 1") < script.index("systemctl restart")
 
 
 def test_update_reports_the_shas_it_moved_between(tailnet, ran):
