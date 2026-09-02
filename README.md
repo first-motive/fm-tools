@@ -108,6 +108,7 @@ fm release                    # is the fleet's next tag safe to cut?
 fm release --repo fm-ros2 --cut -- --minor --apply
 fm setup --role workstation   # stand up a GPU workstation
 fm setup --role jetson        # stand up a Jetson capture rig
+fm setup --role mac           # stand up a Mac that hosts a fleet service
 ```
 
 `--role` never changes which repos are set up. It decides what each repo's

@@ -219,7 +219,14 @@ RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
 # the fm-setup fix.
 # fm-robot-agent joins them: it is versioned by tag on the robot hosts that
 # pull it, and has no cut script for --cut to delegate to.
-NO_SCRIPTED_RELEASE = {"fm-ai", "fm-desktop", "fm-robot-agent"}
+# fm-agent joins them too: it is deployed by pulling main on the single Mac
+# that hosts it, so there is nothing for a cut tag to gate.
+NO_SCRIPTED_RELEASE = {
+    "fm-ai",
+    "fm-desktop",
+    "fm-robot-agent",
+    "fm-agent",
+}
 
 
 def test_a_declared_release_script_is_the_one_that_cuts_a_tag():

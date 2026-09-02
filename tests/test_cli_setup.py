@@ -256,3 +256,30 @@ def test_unknown_role_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     with pytest.raises(SystemExit):
         main(["setup", "--dry-run", "--role", "toaster"])
+
+
+def test_mac_role_is_accepted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    assert main(["setup", "--dry-run", "--json", "--role", "mac"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["steps"]
+
+
+def test_mac_role_forwards_the_agents_installer_arguments(tmp_path, monkeypatch, capsys):
+    recorder = tmp_path / "args.txt"
+    installer = f'#!/bin/sh\necho "$@" >> {recorder}\nexit 0\n'
+    patched = tuple(
+        replace(repo, url=str(_origin(tmp_path, repo.name, installer)), platforms=())
+        for repo in REPOS
+    )
+    monkeypatch.setattr(setup_mod, "REPOS", patched)
+
+    run_setup(json_out=True, base=tmp_path / "workspace", role="mac")
+    payload = json.loads(capsys.readouterr().out)["data"]
+
+    row = next(
+        row
+        for row in payload["steps"]
+        if row["name"] == "fm-agent" and row["action"] == "install"
+    )
+    assert row["detail"] == "--role mac"
+    assert "--role mac" in recorder.read_text()
