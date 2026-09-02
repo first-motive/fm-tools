@@ -6,6 +6,12 @@ on:
     paths-ignore: ["LICENSE", "NOTICE", ".gitignore"]
   pull_request:
     paths-ignore: ["LICENSE", "NOTICE", ".gitignore"]
+  # A merge that produces no run leaves `fm release --cut` deadlocked: the gate
+  # reads CI by commit sha, and a commit with no runs is refused as unknown
+  # rather than assumed good. That happened on the 0.10.0 merge. This makes the
+  # run something a person can ask for, instead of a state only GitHub can
+  # produce.
+  workflow_dispatch:
 
 # Markdown is not path-ignored: AGENTS.md is a rendered artifact, and a hand-edit
 # to it must reach the drift check rather than skip CI.
