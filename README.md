@@ -250,18 +250,26 @@ then restart the unit so it runs what was pulled. A pull without the restart
 leaves a robot answering the old verb set from new code on disk.
 
 ```bash
-fm device update fm-rob-01                        # the agent, at its usual path
+fm device update fm-rob-01                        # move to the ref adopt pinned
+fm device update fm-rob-01 --ref v0.1.0-robots.2  # or to another one
+fm device update fm-rob-01 --ref main             # a bench run against a branch
 fm device update fm-rob-01 --unit fm-zenoh-bridge # another fleet unit
 fm device update fm-rob-01 --dry-run              # print the command, run nothing
 ```
 
-Three things it will not do. It pulls `--ff-only`, because a robot is not a place
-to resolve a merge: a diverged checkout stops and says so. It restarts `fm-*`
-units only, which is exactly what fm-setup's `robot-sudo` grants — a name outside
-that shape is refused here rather than after an ssh. And its `sudo -n` never
-prompts: where the grant is in place it is silent, and where it is not it fails
-immediately with sudo's own message instead of hanging on a password prompt no
-caller is watching.
+It checks out a ref; it does not pull. Every repo `fm device adopt` puts on a
+robot is checked out detached at a pinned tag, precisely so a push to a default
+branch cannot reach a machine that runs it with sudo — and `git pull` on a
+detached HEAD fails with "you are not currently on a branch". So a deploy is a
+move between two refs somebody named, and the default is the one `adopt` pins,
+which means a plain `fm device update` moves a robot to the version the fleet
+says it should run.
+
+Two more things it will not do. It restarts `fm-*` units only, which is exactly
+what fm-setup's `robot-sudo` grants — a name outside that shape is refused here
+rather than after an ssh. And its `sudo -n` never prompts: where the grant is in
+place it is silent, and where it is not it fails immediately with sudo's own
+message instead of hanging on a password prompt no caller is watching.
 
 Run `./run.sh robot-sudo` on the robot once (see fm-setup) to put that grant in
 place. Without it, this verb still works — it just asks for a password, which
