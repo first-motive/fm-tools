@@ -13,7 +13,7 @@ from fm_tools.cli.registry import (
     repo_names,
 )
 
-EXPECTED = {"fm-ai", "fm-setup", "fm-ros2", "fm-desktop", "fm-tools"}
+EXPECTED = {"fm-ai", "fm-setup", "fm-ros2", "fm-desktop", "fm-robot-agent", "fm-tools"}
 
 
 def test_registry_covers_every_sibling_repo():
@@ -113,3 +113,9 @@ def test_repo_rejects_an_unknown_platform():
             entry_points=("install.sh",),
             platforms=("toasteros",),
         )
+
+
+def test_the_robot_agent_is_registered_on_every_platform():
+    """Its agent half is Linux-only; the `robot` verb it mounts is typed on a Mac."""
+    agent = next(repo for repo in REPOS if repo.name == "fm-robot-agent")
+    assert agent.platforms == ()
