@@ -37,7 +37,7 @@ from rich.table import Table
 
 from . import exits
 from .payload import emit
-from .registry import REPOS, HealthCheck, Repo
+from .registry import REPOS, HealthCheck, Repo, current_platform
 from .workspace import resolve_root
 
 
@@ -239,7 +239,13 @@ def gather_checks(base: Path | None = None) -> list[dict]:
     sync, manifest, and undeclared-script rows.
     """
     root = base if base is not None else resolve_root()
-    rows = [_run_check(check, repo, root) for repo in REPOS for check in repo.checks]
+    # Only the repos that belong on this machine. A repo that names a platform is
+    # skipped elsewhere by `fm setup`, and clone-checking it anyway asks a Linux
+    # box why it has no macOS app — a red row that is right to ignore, which is
+    # the kind that teaches people to ignore the rest.
+    plat = current_platform()
+    here = [repo for repo in REPOS if repo.applies_to(plat)]
+    rows = [_run_check(check, repo, root) for repo in here for check in repo.checks]
     rows.extend(_sync_rows(root))
     rows.extend(_manifest_rows(root))
     rows.extend(_undeclared_rows(root))
