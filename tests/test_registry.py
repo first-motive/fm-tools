@@ -1,5 +1,7 @@
 """Registry tests — the static repo model loads and every entry is well-formed."""
 
+from pathlib import Path
+
 import pytest
 
 from fm_tools.cli.registry import (
@@ -18,6 +20,8 @@ EXPECTED = {
     "fm-ai",
     "fm-setup",
     "fm-ros2",
+    "fm-data",
+    "fm-policy",
     "fm-desktop",
     "fm-robot-agent",
     "fm-agent",
@@ -37,11 +41,14 @@ def test_fm_ros2_clones_into_an_underscore_directory():
 
 
 def test_every_other_repo_clones_into_its_own_name():
-    assert all(repo.local_dir == repo.name for repo in REPOS if repo.name != "fm-ros2")
+    # fm-ros2 clones as fm_ros2; fm-data lives inside that workspace, not beside it.
+    named = {"fm-ros2", "fm-data"}
+    assert all(repo.local_dir == repo.name for repo in REPOS if repo.name not in named)
 
 
 def test_every_installable_repo_declares_an_installer():
-    assert all("install.sh" in repo.entry_points for repo in REPOS)
+    # fm-data has no install.sh: the colcon workspace containing it builds it.
+    assert all("install.sh" in repo.entry_points for repo in REPOS if repo.name != "fm-data")
 
 
 def test_repo_names_preserve_listing_order():
@@ -149,3 +156,35 @@ def test_mac_is_an_accepted_role():
     assert "mac" in ROLES
     assert RoleArgs("mac", ("--role", "mac")).args == ("--role", "mac")
 
+
+def test_trainer_is_an_accepted_role():
+    """A GPU training host takes installer arguments of its own, so it is a role."""
+    assert "trainer" in ROLES
+    assert RoleArgs("trainer", ("--role", "trainer")).args == ("--role", "trainer")
+
+
+def test_fm_data_is_a_colcon_package_inside_the_ros2_workspace():
+    """It is imported into fm_ros2/src, so its checkout resolves under that path."""
+    fm_data = next(repo for repo in REPOS if repo.name == "fm-data")
+    assert fm_data.local_dir == "fm_ros2/src/fm_data"
+    assert Path("/ws") / fm_data.local_dir == Path("/ws/fm_ros2/src/fm_data")
+    assert fm_data.entry_points == ("run.sh",)
+    assert fm_data.platforms == ()
+    assert {check.target for check in fm_data.checks if check.kind == "tool"} == {
+        "git",
+        "colcon",
+    }
+
+
+def test_fm_policy_is_a_linux_only_tool_installer():
+    """Rebuilt as a plain uv project, so uv is the only tool beyond git."""
+    policy = next(repo for repo in REPOS if repo.name == "fm-policy")
+    assert policy.platforms == ("linux",)
+    assert policy.applies_to("linux")
+    assert not policy.applies_to("macos")
+    # A tool-installer: install.sh alone, and an installer that takes no role
+    # flags, so every role is installed the same way.
+    assert policy.entry_points == ("install.sh",)
+    assert policy.args_for("workstation") == []
+    assert policy.args_for("trainer") == []
+    assert {check.target for check in policy.checks if check.kind == "tool"} == {"git", "uv"}

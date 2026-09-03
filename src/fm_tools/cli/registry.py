@@ -33,7 +33,11 @@ PLATFORMS = ("linux", "macos")
 # fleet from a terminal, so a setup run there has installers to hand arguments
 # to. It matches the role machine.py already accepts on an identity card; the
 # registry was the side that lagged.
-ROLES = ("workstation", "jetson", "mac")
+#
+# "trainer" is the role of a GPU training host — typically an AWS GPU instance —
+# that trains policies and serves nothing else, so it takes the training half of
+# an installer and none of the workstation's desk-side tooling.
+ROLES = ("workstation", "jetson", "mac", "trainer")
 
 
 def current_platform() -> str:
@@ -218,6 +222,34 @@ REPOS: tuple[Repo, ...] = (
             RoleArgs("workstation", ("--processor", "--service")),
             RoleArgs("jetson", ("--recorder", "--service")),
         ),
+    ),
+    _repo(
+        # The data layer: dataset tooling and episode recording. Its checkout is
+        # not a sibling of the others — it is a colcon package imported into
+        # fm_ros2's workspace at src/fm_data, which is where colcon has to see it
+        # to build it, so local_dir carries the nested path rather than a name.
+        #
+        # run.sh alone: the repo declares no install.sh, because the colcon
+        # workspace that contains it is what builds it.
+        "fm-data",
+        entry_points=("run.sh",),
+        tools=("colcon",),
+        local_dir="fm_ros2/src/fm_data",
+    ),
+    _repo(
+        # The policy layer: training and serving learned policies. Being rebuilt
+        # as a plain uv project — no ROS, no colcon — so uv is the only tool it
+        # checks for. Linux only, because both halves want a GPU host and no Mac
+        # in the fleet is one. It mounts the `policy` verb via its fm.json.
+        # install.sh alone, and no role arguments: fm-policy provisions no host
+        # and resolves a venv inside its own checkout, so it is a tool-installer
+        # — a role the bootstrap contract gives no run.sh and whose installer
+        # takes only --dry-run and --uninstall. Its `policy` verb is the run
+        # front door, mounted from fm.json.
+        "fm-policy",
+        entry_points=("install.sh",),
+        tools=("uv",),
+        platforms=("linux",),
     ),
     # A native macOS app: there is no Linux build to install on a workstation or
     # a Jetson, so a setup run there skips it rather than failing on it.
