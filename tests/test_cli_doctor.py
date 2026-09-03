@@ -275,3 +275,27 @@ def test_every_guarded_checkout_gets_a_row(tmp_path):
         ("fm-data", "fail"),
         ("fm-ros2", "pass"),
     ]
+
+
+def test_a_repo_for_another_platform_is_not_graded(tmp_path, monkeypatch):
+    """A Linux box is not asked why it has no macOS app.
+
+    `fm setup` already skips a repo that names another platform. Clone-checking
+    it anyway produced a red row that was right to ignore — on fm-ws-01 that was
+    `fm-desktop cloned: fail`, permanently — and a red row that is right to
+    ignore is what teaches people to ignore the rest.
+    """
+    monkeypatch.setattr(doctor, "current_platform", lambda: "linux")
+    rows = doctor.gather_checks(tmp_path)
+    graded = {row["repo"] for row in rows}
+
+    assert "fm-desktop" not in graded, "a macOS-only repo was graded on Linux"
+    assert "fm-setup" in graded, "a Linux repo was skipped on Linux"
+
+
+def test_a_repo_for_this_platform_is_still_graded(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "current_platform", lambda: "macos")
+    graded = {row["repo"] for row in doctor.gather_checks(tmp_path)}
+
+    assert "fm-desktop" in graded
+    assert "fm-setup" not in graded, "a Linux-only repo was graded on macOS"
