@@ -53,7 +53,7 @@ REFS = {
     "fm-tools": "v0.9.0-robots.2",
     "fm-setup": "v0.2.0-robots.2",
     "fm-comms": "v0.2.0-robots.1",
-    "fm-robot-agent": "v0.1.0-robots.2",
+    "fm-robot-agent": "v0.1.0-robots.3",
 }
 
 # What a ref may look like. Every pinned value is a tag we cut, but `--ref` is
