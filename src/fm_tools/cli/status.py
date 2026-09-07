@@ -29,7 +29,7 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
     the static registry or git itself — never from external input.
     """
     return subprocess.run(
-        ["git", "-C", str(path), *args],
+        ["git", "--no-optional-locks", "-C", str(path), *args],
         capture_output=True,
         text=True,
         check=False,
@@ -45,8 +45,8 @@ def _repo_status(repo: Repo, base: Path, fetch: bool = True) -> dict:
     first so the counts reflect the remote; its failure (offline, no remote) is
     ignored — the returncode guards below still null out the counts.
     """
-    path = base / repo.local_dir
-    if not (path / ".git").is_dir():
+    path = repo.checkout(base)
+    if not (path / ".git").exists():
         return {
             "name": repo.name,
             "cloned": False,

@@ -34,6 +34,36 @@ def test_no_manifest_is_not_a_problem(tmp_path):
     assert problems == []
 
 
+def test_sibling_data_clone_is_discovered_and_reported_consistently(tmp_path, monkeypatch, capsys):
+    import subprocess
+
+    checkout = tmp_path / "fm-data"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "fm.json").write_text(json.dumps({"version": 1, "commands": {
+        "data-archive": {"script": "archive.sh"}
+    }}))
+    _script(checkout, "archive.sh")
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    assert discover(tmp_path).commands["data-archive"].cwd == checkout
+    main(["list", "--json"])
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert next(r for r in rows if r["name"] == "fm-data")["local_dir"] == "fm-data"
+    main(["status", "--no-fetch", "--json"])
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert next(r for r in rows if r["name"] == "fm-data")["cloned"]
+    main(["doctor", "--no-fetch", "--json"])
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert next(r for r in rows if r["repo"] == "fm-data" and r["kind"] == "clone")["ok"]
+
+
+@pytest.mark.parametrize("arguments", ["preflight", [1], ["a\x00b"]])
+def test_healthcheck_arguments_are_validated(tmp_path, arguments):
+    _manifest(tmp_path, FM_ROS2, {"archive": {"script": "archive.sh", "healthcheck": arguments}})
+    commands, problems = load_manifest(FM_ROS2, tmp_path)
+    assert not commands and problems[0].kind == "schema"
+
+
 def test_declared_command_mounts_as_a_verb(tmp_path):
     checkout = _manifest(
         tmp_path, FM_ROS2, {"teleop": {"script": "scripts/run/teleop.sh", "help": "drive"}}

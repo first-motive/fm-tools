@@ -103,6 +103,7 @@ refusals: a commit nothing has checked is what the gate exists to catch.
 fm list                       # rich table
 fm status --json              # machine-readable, parseable by an agent
 fm doctor                     # exits non-zero if a check fails
+fm doctor --no-fetch --json    # check without updating Git refs
 fm setup --dry-run            # read the plan before anything is written
 fm release                    # is the fleet's next tag safe to cut?
 fm release --repo fm-ros2 --cut -- --minor --apply
@@ -121,6 +122,12 @@ against — `fm-desktop` is a native macOS app, so a Linux setup run skips it, a
 `fm-setup` provisions machines, so a macOS run skips that.
 
 ### Repo Commands
+
+All verbs use the same checkout selection. For `fm-data`, an existing
+`fm_ros2/src/fm_data` path takes priority. If that path is absent, an existing
+sibling `fm-data` clone or worktree is used. An occupied path is never bypassed,
+and setup keeps the assembled path as the default for a new clone. `fm list`
+reports the selected relative path.
 
 Repos mount their own verbs. A repo declares them in a top-level `fm.json`:
 
@@ -145,6 +152,15 @@ truth for its own interface. Two repos claiming one verb is reported by
 `fm doctor`, and the first in registry order keeps it; a manifest can never
 shadow a built-in verb. `fm --help` lists whatever the repos on this machine
 declare, and `fm commands --json` says the same thing to an agent.
+
+A command can declare `"healthcheck": ["preflight", "--json"]`. Doctor runs
+that script with those arguments and a 30-second timeout. The command owner
+must keep the check read-only and return
+`{"contract_version": 1, "checks": {"label": "pass"}}`. Check values are
+`pass`, `fail`, `warn`, or `deferred`; deferred checks appear as warnings.
+Invalid output, execution failures, and timeouts fail the check. Subprocess
+diagnostics are not displayed. Credentials are not brokered for these checks.
+`--no-fetch` suppresses Git fetches; provider preflights can still read the network.
 
 #### Nouns, not just verbs
 

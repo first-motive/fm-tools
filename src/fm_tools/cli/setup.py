@@ -59,8 +59,8 @@ def plan_repo(repo: Repo, root: Path, plat: str | None = None) -> dict:
     if not repo.applies_to(plat):
         return _step(repo.name, "skip", True, f"{'/'.join(repo.platforms)} only, this is {plat}")
 
-    checkout = root / repo.local_dir
-    if (checkout / ".git").is_dir():
+    checkout = repo.checkout(root)
+    if (checkout / ".git").exists():
         where = str(checkout)
         if checkout.is_symlink():
             where = f"{checkout} -> {checkout.resolve()}"
@@ -78,7 +78,7 @@ def gather_plan(root: Path, plat: str | None = None) -> list[dict]:
 
 def _clone(repo: Repo, root: Path) -> dict:
     """Clone one repo under ``root``, streaming git's own progress."""
-    checkout = root / repo.local_dir
+    checkout = repo.checkout(root)
     root.mkdir(parents=True, exist_ok=True)
     print(f"fm setup: cloning {repo.url} into {checkout}", file=sys.stderr)
     done = subprocess.run(["git", "clone", repo.url, str(checkout)], check=False)

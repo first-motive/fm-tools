@@ -188,3 +188,16 @@ def test_fm_policy_is_a_linux_only_tool_installer():
     assert policy.args_for("workstation") == []
     assert policy.args_for("trainer") == []
     assert {check.target for check in policy.checks if check.kind == "tool"} == {"git", "uv"}
+
+
+def test_data_checkout_prefers_assembled_tree_and_preserves_occupied_paths(tmp_path):
+    data = next(repo for repo in REPOS if repo.name == "fm-data")
+    sibling = tmp_path / "fm-data"
+    sibling.mkdir()
+    (sibling / ".git").write_text("gitdir: /a/worktree\n")
+    assert data.checkout(tmp_path) == sibling
+    assembled = tmp_path / data.local_dir
+    assembled.mkdir(parents=True)
+    assert data.checkout(tmp_path) == assembled, "an occupied canonical path must not be bypassed"
+    (assembled / ".git").mkdir()
+    assert data.checkout(tmp_path) == assembled, "the appliance checkout must win when both exist"

@@ -45,8 +45,8 @@ def _first_line(text: str) -> str:
 
 def _update_repo(repo: Repo, base: Path) -> dict:
     """Update one repo: absent, skipped-dirty, pull-failed, or updated."""
-    path = base / repo.local_dir
-    if not (path / ".git").is_dir():
+    path = repo.checkout(base)
+    if not (path / ".git").exists():
         return {"name": repo.name, "cloned": False, "action": "absent", "ok": True, "detail": ""}
 
     if _git(path, "status", "--porcelain").stdout.strip():

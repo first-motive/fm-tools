@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import platform
 from dataclasses import dataclass
+from pathlib import Path
 
 # A health check is one of two kinds:
 #   "clone" — the repo's local_dir must exist as a git clone on disk
@@ -141,6 +142,19 @@ class Repo:
     def applies_to(self, plat: str) -> bool:
         """Whether this repo belongs on a machine running ``plat``."""
         return not self.platforms or plat in self.platforms
+
+    def checkout(self, root: Path) -> Path:
+        """Use the assembled data checkout first, or an existing sibling clone.
+
+        An occupied canonical path is never bypassed. This keeps setup's
+        refusal intact and prevents a second clone from shadowing the appliance.
+        """
+        canonical = root / self.local_dir
+        sibling = root / self.name
+        if self.name == "fm-data" and not canonical.exists() and not canonical.is_symlink():
+            if (sibling / ".git").exists():
+                return sibling
+        return canonical
 
     def args_for(self, role: str | None) -> list[str]:
         """Installer arguments for ``role``, or none when the role declares none."""
