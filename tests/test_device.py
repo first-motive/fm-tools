@@ -375,7 +375,7 @@ def test_a_restart_still_takes_a_fleet_unit_only(tailnet, ran):
 
 def test_the_pinned_refs_name_the_tags_the_robots_run(tailnet):
     """A bump here is what moves a robot; a stale entry adopts one to old code."""
-    assert ref_for("fm-robot-agent") == "v0.1.0-robots.2"
+    assert ref_for("fm-robot-agent") == "v0.1.0-robots.3"
     assert ref_for("fm-setup") == "v0.2.0-robots.2"
 
 
