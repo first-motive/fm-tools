@@ -179,8 +179,8 @@ def _render_table(rows: list[dict]) -> None:
 
 def _cut(repo: Repo, forwarded: list[str], root: Path) -> int:
     """Delegate to the repo's own release script."""
-    checkout = root / repo.local_dir
-    if not (checkout / ".git").is_dir():
+    checkout = repo.checkout(root)
+    if not (checkout / ".git").exists():
         exits.fail(f"{repo.name} is not cloned at {checkout}")
         return exits.PRECONDITION
 

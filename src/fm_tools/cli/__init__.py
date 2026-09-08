@@ -50,11 +50,14 @@ __all__ = ["BUILTIN_VERBS", "FORWARDING_VERBS", "main"]
 
 def _list_payload() -> list[dict]:
     """The ``list`` verb's data, shared by the JSON and table renderers."""
+    from .workspace import resolve_root
+
+    root = resolve_root()
     return [
         {
             "name": repo.name,
             "url": repo.url,
-            "local_dir": repo.local_dir,
+            "local_dir": str(repo.checkout(root).relative_to(root)),
             "entry_points": list(repo.entry_points),
         }
         for repo in REPOS
@@ -94,7 +97,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     """``fm doctor`` — declared health checks (lazy import)."""
     from .doctor import run_doctor
 
-    return run_doctor(json_out=args.json)
+    return run_doctor(json_out=args.json, fetch=not args.no_fetch)
 
 
 def _cmd_commands(args: argparse.Namespace) -> int:
@@ -142,7 +145,7 @@ def _help_for(name: str) -> str:
     return next(entry.help for entry in BUILTINS if entry.name == name)
 
 
-def _add_read_verb(sub, name: str, handler) -> None:
+def _add_read_verb(sub, name: str, handler) -> argparse.ArgumentParser:
     """Register a read verb with the shared ``--json`` flag."""
     verb = sub.add_parser(name, help=_help_for(name))
     verb.add_argument(
@@ -151,6 +154,7 @@ def _add_read_verb(sub, name: str, handler) -> None:
         help="emit machine-readable JSON instead of a table",
     )
     verb.set_defaults(func=handler)
+    return verb
 
 
 def _manifest_epilog(commands: dict) -> str:
@@ -194,7 +198,8 @@ def _build_parser(commands: dict | None = None, version: str = "fm") -> argparse
     )
     sub = parser.add_subparsers(dest="verb", required=True)
     _add_read_verb(sub, "list", _cmd_list)
-    _add_read_verb(sub, "doctor", _cmd_doctor)
+    doctor = _add_read_verb(sub, "doctor", _cmd_doctor)
+    doctor.add_argument("--no-fetch", action="store_true", help="check existing Git refs without fetching")
     _add_read_verb(sub, "root", _cmd_root)
     _add_read_verb(sub, "commands", _cmd_commands)
 

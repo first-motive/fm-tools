@@ -30,6 +30,8 @@ undeclared-script heuristic nudges without breaking a build over a judgement cal
 from __future__ import annotations
 
 import shutil
+import json
+import subprocess
 from pathlib import Path
 
 from rich.console import Console
@@ -54,7 +56,7 @@ def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
     closed rather than raising mid-report.
     """
     if check.kind == "clone":
-        ok = (base / repo.local_dir / ".git").is_dir()
+        ok = (repo.checkout(base) / ".git").exists()
     elif check.kind == "tool":
         ok = shutil.which(check.target) is not None
     else:  # pragma: no cover - registry rejects unknown kinds at construction
@@ -62,7 +64,7 @@ def _run_check(check: HealthCheck, repo: Repo, base: Path) -> dict:
     return _row(repo.name, check.label, check.kind, "pass" if ok else "fail")
 
 
-def _sync_rows(base: Path) -> list[dict]:
+def _sync_rows(base: Path, fetch: bool = True) -> list[dict]:
     """One synthesized "up to date with origin" row per cloned repo.
 
     Reuses ``fm status`` (which fetches) so doctor and status agree on behind
@@ -73,7 +75,7 @@ def _sync_rows(base: Path) -> list[dict]:
     from .status import gather_status
 
     rows = []
-    for status in gather_status(base=base, fetch=True):
+    for status in gather_status(base=base, fetch=fetch):
         if not status["cloned"]:
             continue
         ok = status["behind"] in (0, None)
@@ -179,7 +181,7 @@ def _undeclared_rows(base: Path) -> list[dict]:
 
     rows = []
     for repo in REPOS:
-        checkout = base / repo.local_dir
+        checkout = repo.checkout(base)
         run_dir = checkout / "scripts" / "run"
         if not run_dir.is_dir():
             continue
@@ -231,7 +233,47 @@ def _version_rows(base: Path) -> list[dict]:
     ]
 
 
-def gather_checks(base: Path | None = None) -> list[dict]:
+def _health_rows(base: Path) -> list[dict]:
+    """Report bounded, read-only preflights declared by command owners.
+
+    Checks return {"contract_version": 1, "checks": {"label": "pass|fail|warn|deferred"}}.
+    Never print subprocess diagnostics: service scripts may read credentials.
+    """
+    from . import BUILTIN_VERBS
+    from .manifest import discover
+
+    rows = []
+    for command in discover(base, reserved=BUILTIN_VERBS).commands.values():
+        if not command.healthcheck:
+            continue
+        try:
+            result = subprocess.run(
+                [str(command.script), *command.healthcheck],
+                cwd=command.cwd, capture_output=True, text=True, timeout=30, check=False,
+            )
+            payload = json.loads(result.stdout)
+            checks = payload["checks"]
+            if payload["contract_version"] != 1 or not isinstance(checks, dict) or not checks:
+                raise ValueError("invalid preflight")
+            if not all(
+                isinstance(label, str) and isinstance(level, str)
+                and level in {"pass", "fail", "warn", "deferred"}
+                for label, level in checks.items()
+            ):
+                raise ValueError("invalid check")
+            rows.extend(
+                _row(command.repo, f"{command.name}: {label}", "health",
+                     "warn" if level == "deferred" else level)
+                for label, level in checks.items()
+            )
+            if result.returncode and "fail" not in checks.values():
+                rows.append(_row(command.repo, f"{command.name}: preflight failed", "health", "fail"))
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+            rows.append(_row(command.repo, f"{command.name}: preflight unavailable or invalid", "health", "fail"))
+    return rows
+
+
+def gather_checks(base: Path | None = None, fetch: bool = True) -> list[dict]:
     """Run every declared check for every repo under ``base``.
 
     ``base`` defaults to the resolved workspace root, matching how ``fm status``
@@ -246,10 +288,11 @@ def gather_checks(base: Path | None = None) -> list[dict]:
     plat = current_platform()
     here = [repo for repo in REPOS if repo.applies_to(plat)]
     rows = [_run_check(check, repo, root) for repo in here for check in repo.checks]
-    rows.extend(_sync_rows(root))
+    rows.extend(_sync_rows(root, fetch=fetch))
     rows.extend(_manifest_rows(root))
     rows.extend(_undeclared_rows(root))
     rows.extend(_version_rows(root))
+    rows.extend(_health_rows(root))
     rows.extend(_guard_rows(root))
     return rows
 
@@ -273,7 +316,7 @@ def render_checks(rows: list[dict]) -> None:
     Console().print(table)
 
 
-def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
+def run_doctor(json_out: bool = False, base: Path | None = None, fetch: bool = True) -> int:
     """``fm doctor`` handler. Exits with the unhealthy code when a check fails.
 
     Not a usage or precondition failure: the command ran exactly as asked and the
@@ -281,7 +324,7 @@ def run_doctor(json_out: bool = False, base: Path | None = None) -> int:
     move the exit code — a repo with an undeclared workflow script is worth
     flagging, not worth failing a build over.
     """
-    rows = gather_checks(base)
+    rows = gather_checks(base, fetch=fetch)
     if json_out:
         emit("doctor", rows)
     else:

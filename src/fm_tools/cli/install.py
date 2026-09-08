@@ -62,8 +62,8 @@ def run_installer(repo: Repo, root: Path, args: list[str] | None = None) -> int:
     when there is nothing to run: no clone, no installer, not executable. Those
     three are the machine not being ready, never the command being wrong.
     """
-    checkout = root / repo.local_dir
-    if not (checkout / ".git").is_dir():
+    checkout = repo.checkout(root)
+    if not (checkout / ".git").exists():
         exits.fail(f"{repo.name} is not cloned at {checkout} — run `fm setup` first")
         return exits.PRECONDITION
 

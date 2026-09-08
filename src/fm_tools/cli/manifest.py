@@ -66,6 +66,7 @@ class Command:
     cwd: Path
     help: str = ""
     credentials: tuple[str, ...] = ()
+    healthcheck: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,12 @@ def _entry_command(
             f"{name}: unknown credential(s) {', '.join(sorted(unknown))}",
         )
 
+    healthcheck = entry.get("healthcheck", [])
+    if not isinstance(healthcheck, list) or not all(
+        isinstance(arg, str) and arg and "\x00" not in arg for arg in healthcheck
+    ):
+        return None, Problem("schema", repo.name, f"{name}: 'healthcheck' must be a list of arguments")
+
     command = Command(
         name=name,
         repo=repo.name,
@@ -130,6 +137,7 @@ def _entry_command(
         cwd=checkout,
         help=str(entry.get("help", "")),
         credentials=tuple(declared),
+        healthcheck=tuple(healthcheck),
     )
     if not script.is_file():
         return command, Problem("missing", repo.name, f"{name}: {raw} does not exist")
@@ -140,7 +148,7 @@ def _entry_command(
 
 def load_manifest(repo: Repo, root: Path) -> tuple[list[Command], list[Problem]]:
     """Read one repo's ``fm.json``. No manifest is normal — not a problem."""
-    checkout = root / repo.local_dir
+    checkout = repo.checkout(root)
     path = checkout / MANIFEST_NAME
     if not path.is_file():
         return [], []

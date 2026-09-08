@@ -299,3 +299,47 @@ def test_a_repo_for_this_platform_is_still_graded(tmp_path, monkeypatch):
 
     assert "fm-desktop" in graded
     assert "fm-setup" not in graded, "a Linux-only repo was graded on macOS"
+
+
+def test_no_fetch_leaves_remote_refs_unchanged(tmp_path, monkeypatch, capsys):
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    _git(origin, "-c", "user.email=t@e.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "one")
+    checkout = tmp_path / "fm-tools"
+    _git(tmp_path, "clone", str(origin), str(checkout))
+    _git(origin, "-c", "user.email=t@e.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "two")
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    main(["doctor", "--no-fetch", "--json"])
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert next(r for r in rows if r["repo"] == "fm-tools" and r["kind"] == "sync")["ok"]
+    assert not (checkout / ".git/FETCH_HEAD").exists(), "read-only doctor fetched Git refs"
+
+
+def test_declared_healthcheck_reports_owner_checks_without_diagnostics(tmp_path):
+    checkout = _manifest(tmp_path, {"archive": {
+        "script": "archive.sh", "healthcheck": ["preflight", "--json"]
+    }})
+    script = _script(checkout, "archive.sh")
+    script.write_text('''#!/bin/sh
+[ "$1" = preflight ] && [ "$2" = --json ] || exit 2
+echo 'private diagnostic' >&2
+echo '{"contract_version":1,"checks":{"reader_scope":"pass","writer_scope":"fail","package":"deferred"}}'
+exit 1
+''')
+    rows = _rows(tmp_path, "health")
+    assert [(r["check"], r["level"]) for r in rows] == [
+        ("archive: reader_scope", "pass"), ("archive: writer_scope", "fail"),
+        ("archive: package", "warn"),
+    ]
+
+
+def test_invalid_healthcheck_output_fails_without_echoing_it(tmp_path):
+    checkout = _manifest(tmp_path, {"archive": {
+        "script": "archive.sh", "healthcheck": ["preflight", "--json"]
+    }})
+    script = _script(checkout, "archive.sh")
+    script.write_text("#!/bin/sh\necho private-output\n")
+    rows = _rows(tmp_path, "health")
+    assert len(rows) == 1 and rows[0]["level"] == "fail"
+    assert "private-output" not in str(rows)

@@ -118,7 +118,7 @@ def _delegates(verb: str, root: Path) -> list[dict]:
     if not field:
         return []
     return [
-        {"repo": repo.name, "script": str(root / repo.local_dir / script)}
+        {"repo": repo.name, "script": str(repo.checkout(root) / script)}
         for repo in REPOS
         if (script := getattr(repo, field, ""))
     ]
