@@ -284,10 +284,18 @@ def gather_checks(base: Path | None = None, fetch: bool = True) -> list[dict]:
     # Only the repos that belong on this machine. A repo that names a platform is
     # skipped elsewhere by `fm setup`, and clone-checking it anyway asks a Linux
     # box why it has no macOS app — a red row that is right to ignore, which is
-    # the kind that teaches people to ignore the rest.
+    # the kind that teaches people to ignore the rest. Within an applicable
+    # repo, a check can further narrow to one platform (fm-ros2 wants pixi on
+    # macOS and colcon on Linux) without hiding the clone/git checks, which
+    # stay unscoped.
     plat = current_platform()
     here = [repo for repo in REPOS if repo.applies_to(plat)]
-    rows = [_run_check(check, repo, root) for repo in here for check in repo.checks]
+    rows = [
+        _run_check(check, repo, root)
+        for repo in here
+        for check in repo.checks
+        if check.applies_to(plat)
+    ]
     rows.extend(_sync_rows(root, fetch=fetch))
     rows.extend(_manifest_rows(root))
     rows.extend(_undeclared_rows(root))
