@@ -63,17 +63,34 @@ class HealthCheck:
     ``kind`` is one of :data:`CHECK_KINDS`. ``label`` is what the check reports.
     ``target`` is the binary name for ``"tool"`` checks; it is unused (and left
     empty) for ``"clone"`` checks, which test ``local_dir`` instead.
+
+    ``platforms`` scopes the check the same way :attr:`Repo.platforms` scopes a
+    whole repo. Empty means the check runs on every platform the repo itself
+    applies to — the common case. A repo can outgrow one tool check on one
+    platform (fm-ros2 wants pixi on macOS and colcon on Linux) without the
+    clone and git checks, which are platform-agnostic, needing a scope too.
     """
 
     kind: str
     label: str
     target: str = ""
+    platforms: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in CHECK_KINDS:
             raise ValueError(f"unknown check kind {self.kind!r}; expected one of {CHECK_KINDS}")
         if self.kind == "tool" and not self.target:
             raise ValueError(f"tool check {self.label!r} needs a target binary")
+        unknown = set(self.platforms) - set(PLATFORMS)
+        if unknown:
+            raise ValueError(
+                f"check {self.label!r} declares unknown platform(s) {sorted(unknown)}; "
+                f"expected some of {PLATFORMS}"
+            )
+
+    def applies_to(self, plat: str) -> bool:
+        """Whether this check runs on a machine running ``plat``."""
+        return not self.platforms or plat in self.platforms
 
 
 @dataclass(frozen=True)
@@ -138,6 +155,17 @@ class Repo:
                 f"{self.name} declares unknown platform(s) {sorted(unknown)}; "
                 f"expected some of {PLATFORMS}"
             )
+        if self.platforms:
+            # A check scoped to a platform the repo itself never runs on would
+            # be a check that can never run — silently dead, not merely narrow.
+            for check in self.checks:
+                stray = set(check.platforms) - set(self.platforms)
+                if stray:
+                    raise ValueError(
+                        f"{self.name} check {check.label!r} is scoped to "
+                        f"{sorted(stray)}, outside the repo's own platforms "
+                        f"{self.platforms}; it could never run"
+                    )
 
     def applies_to(self, plat: str) -> bool:
         """Whether this repo belongs on a machine running ``plat``."""
@@ -172,16 +200,25 @@ def _repo(
     name: str,
     entry_points: tuple[str, ...],
     tools: tuple[str, ...] = (),
+    platform_tools: tuple[tuple[str, str], ...] = (),
     update_script: str = "",
     release_script: str = "",
     local_dir: str = "",
     platforms: tuple[str, ...] = (),
     role_args: tuple[RoleArgs, ...] = (),
 ) -> Repo:
+    # ``tools`` names a binary every applicable platform needs; ``platform_tools``
+    # pairs a platform with the one binary that platform needs instead — the
+    # host build tool differs (pixi on macOS, colcon on Linux) even though both
+    # platforms clone the same repo.
     checks = (
         HealthCheck("clone", f"{name} cloned"),
         HealthCheck("tool", "git on PATH", "git"),
         *(HealthCheck("tool", f"{tool} on PATH", tool) for tool in tools),
+        *(
+            HealthCheck("tool", f"{tool} on PATH", tool, platforms=(plat,))
+            for plat, tool in platform_tools
+        ),
     )
     return Repo(
         name=name,
@@ -223,7 +260,10 @@ REPOS: tuple[Repo, ...] = (
     _repo(
         "fm-ros2",
         entry_points=("install.sh", "run.sh"),
-        tools=("colcon",),
+        # The host build tool differs by platform: pixi on macOS, colcon on
+        # Linux, because fm-ros2 is developed and health-checked from a Mac
+        # laptop through pixi even though it runs on Linux fleet hosts.
+        platform_tools=(("macos", "pixi"), ("linux", "colcon")),
         update_script="scripts/update.sh",
         release_script="scripts/dev/cut-release.sh",
         # The checkout is fm_ros2 (underscore) — it doubles as the ament package
@@ -244,10 +284,11 @@ REPOS: tuple[Repo, ...] = (
         # to build it, so local_dir carries the nested path rather than a name.
         #
         # run.sh alone: the repo declares no install.sh, because the colcon
-        # workspace that contains it is what builds it.
+        # workspace that contains it is what builds it. Same host build tool
+        # split as fm-ros2: pixi on macOS, colcon on Linux.
         "fm-data",
         entry_points=("run.sh",),
-        tools=("colcon",),
+        platform_tools=(("macos", "pixi"), ("linux", "colcon")),
         local_dir="fm_ros2/src/fm_data",
     ),
     _repo(
@@ -287,10 +328,11 @@ REPOS: tuple[Repo, ...] = (
         # service installed on the Rune Mac mini under its own `fm` account,
         # which is the one machine that holds the fleet's workspace and secrets.
         #
-        # ollama serves the local model; uv runs the agent itself and its tooling.
+        # The model it drives is remote, not a local ollama serve; uv runs the
+        # agent itself and its tooling.
         "fm-agent",
         entry_points=("install.sh", "run.sh"),
-        tools=("uv", "ollama"),
+        tools=("uv",),
         platforms=("macos",),
         role_args=(RoleArgs("mac", ("--role", "mac")),),
     ),

@@ -86,6 +86,30 @@ def test_unknown_check_kind_is_rejected():
         HealthCheck("wat", "nonsense")
 
 
+def test_health_check_rejects_an_unknown_platform():
+    with pytest.raises(ValueError):
+        HealthCheck("tool", "pixi on PATH", "pixi", platforms=("windows",))
+
+
+def test_health_check_applies_to_its_declared_platforms_only():
+    check = HealthCheck("tool", "pixi on PATH", "pixi", platforms=("macos",))
+    assert check.applies_to("macos")
+    assert not check.applies_to("linux")
+
+
+def test_health_check_with_no_platforms_applies_everywhere():
+    check = HealthCheck("tool", "git on PATH", "git")
+    assert check.applies_to("macos")
+    assert check.applies_to("linux")
+
+
+def test_fm_ros2_wants_pixi_on_macos_and_colcon_on_linux():
+    fm_ros2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
+    assert {
+        (check.target, check.platforms) for check in fm_ros2.checks if check.kind == "tool"
+    } == {("git", ()), ("pixi", ("macos",)), ("colcon", ("linux",))}
+
+
 def test_repo_is_frozen():
     with pytest.raises(Exception):
         REPOS[0].name = "mutated"  # type: ignore[misc]
@@ -131,6 +155,31 @@ def test_repo_rejects_an_unknown_platform():
         )
 
 
+def test_repo_rejects_a_check_scoped_outside_its_own_platforms():
+    """A check scoped to a platform the repo never runs on could never run."""
+    with pytest.raises(ValueError):
+        Repo(
+            name="fm-toaster",
+            url="https://example.invalid/fm-toaster.git",
+            local_dir="fm-toaster",
+            entry_points=("install.sh",),
+            platforms=("macos",),
+            checks=(HealthCheck("tool", "colcon on PATH", "colcon", platforms=("linux",)),),
+        )
+
+
+def test_repo_accepts_a_check_scoped_to_a_platform_it_permits():
+    repo = Repo(
+        name="fm-toaster",
+        url="https://example.invalid/fm-toaster.git",
+        local_dir="fm-toaster",
+        entry_points=("install.sh",),
+        platforms=("macos", "linux"),
+        checks=(HealthCheck("tool", "pixi on PATH", "pixi", platforms=("macos",)),),
+    )
+    assert repo.checks[0].platforms == ("macos",)
+
+
 def test_the_robot_agent_is_registered_on_every_platform():
     """Its agent half is Linux-only; the `robot` verb it mounts is typed on a Mac."""
     agent = next(repo for repo in REPOS if repo.name == "fm-robot-agent")
@@ -148,7 +197,6 @@ def test_the_hermes_agent_is_macos_only_and_carries_the_mac_role():
     assert {check.target for check in agent.checks if check.kind == "tool"} == {
         "git",
         "uv",
-        "ollama",
     }
 
 
@@ -170,10 +218,9 @@ def test_fm_data_is_a_colcon_package_inside_the_ros2_workspace():
     assert Path("/ws") / fm_data.local_dir == Path("/ws/fm_ros2/src/fm_data")
     assert fm_data.entry_points == ("run.sh",)
     assert fm_data.platforms == ()
-    assert {check.target for check in fm_data.checks if check.kind == "tool"} == {
-        "git",
-        "colcon",
-    }
+    assert {
+        (check.target, check.platforms) for check in fm_data.checks if check.kind == "tool"
+    } == {("git", ()), ("pixi", ("macos",)), ("colcon", ("linux",))}
 
 
 def test_fm_policy_is_a_linux_only_tool_installer():

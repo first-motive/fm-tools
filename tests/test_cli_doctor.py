@@ -301,6 +301,19 @@ def test_a_repo_for_this_platform_is_still_graded(tmp_path, monkeypatch):
     assert "fm-setup" not in graded, "a Linux-only repo was graded on macOS"
 
 
+def test_platform_scoped_tool_checks_are_filtered_to_this_platform(tmp_path, monkeypatch):
+    """fm-ros2 wants pixi on macOS and colcon on Linux, never both at once."""
+    monkeypatch.setattr(doctor, "current_platform", lambda: "macos")
+    rows = doctor.gather_checks(tmp_path)
+    tool_checks = {row["check"] for row in rows if row["repo"] == "fm-ros2" and row["kind"] == "tool"}
+    assert tool_checks == {"git on PATH", "pixi on PATH"}
+
+    monkeypatch.setattr(doctor, "current_platform", lambda: "linux")
+    rows = doctor.gather_checks(tmp_path)
+    tool_checks = {row["check"] for row in rows if row["repo"] == "fm-ros2" and row["kind"] == "tool"}
+    assert tool_checks == {"git on PATH", "colcon on PATH"}
+
+
 def test_no_fetch_leaves_remote_refs_unchanged(tmp_path, monkeypatch, capsys):
     origin = tmp_path / "origin"
     origin.mkdir()
