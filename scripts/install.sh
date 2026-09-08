@@ -83,8 +83,12 @@ do_install() {
   fm_require_cmd uv
   fm_log "Installing fm CLI: $spec"
 
-  # --force so a re-run upgrades in place instead of erroring on an existing tool.
-  uv tool install --force "$spec"
+  # --force so a re-run upgrades in place instead of erroring on an existing
+  # tool. --refresh so uv re-resolves the git ref's metadata instead of
+  # answering from its resolver cache: --force alone recreates the tool's
+  # environment but does not refresh that cache, so a re-run after a new tag
+  # was cut could still resolve and install the previously cached version.
+  uv tool install --force --refresh "$spec"
 
   # uv installs into its own tool bin; that dir is on PATH only after the user has
   # run `uv tool update-shell` once. Point them at it rather than editing a
