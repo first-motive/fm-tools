@@ -356,3 +356,69 @@ def test_invalid_healthcheck_output_fails_without_echoing_it(tmp_path):
     rows = _rows(tmp_path, "health")
     assert len(rows) == 1 and rows[0]["level"] == "fail"
     assert "private-output" not in str(rows)
+
+
+FM_DATA = next(repo for repo in REPOS if repo.name == "fm-data")
+
+
+def _init_repo(path):
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-b", "main")
+    _git(path, "config", "user.email", "t@e.com")
+    _git(path, "config", "user.name", "t")
+
+
+def _commit(path, name):
+    (path / name).write_text(name)
+    _git(path, "add", name)
+    _git(path, "commit", "-m", name)
+
+
+def _sibling_rows(base):
+    return [
+        row
+        for row in gather_checks(base=base)
+        if row["kind"] == "clone" and row["repo"] == "fm-data" and row["check"].startswith("sibling")
+    ]
+
+
+def test_diverged_fm_data_sibling_warns(tmp_path):
+    canonical = tmp_path / FM_DATA.local_dir
+    sibling = tmp_path / FM_DATA.name
+    _init_repo(canonical)
+    _commit(canonical, "a.txt")
+    _init_repo(sibling)
+    _commit(sibling, "b.txt")
+
+    rows = _sibling_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["level"] == "warn"
+    assert rows[0]["ok"] is True, "a warning never fails the exit code"
+
+
+def test_fm_data_sibling_at_the_same_commit_produces_no_row(tmp_path):
+    canonical = tmp_path / FM_DATA.local_dir
+    sibling = tmp_path / FM_DATA.name
+    _init_repo(canonical)
+    _commit(canonical, "a.txt")
+    _git(tmp_path, "clone", str(canonical), str(sibling))
+
+    assert _sibling_rows(tmp_path) == []
+
+
+def test_only_one_fm_data_clone_produces_no_sibling_row(tmp_path):
+    canonical = tmp_path / FM_DATA.local_dir
+    _init_repo(canonical)
+    _commit(canonical, "a.txt")
+
+    assert _sibling_rows(tmp_path) == []
+
+
+def test_non_git_sibling_produces_no_row(tmp_path):
+    canonical = tmp_path / FM_DATA.local_dir
+    sibling = tmp_path / FM_DATA.name
+    _init_repo(canonical)
+    _commit(canonical, "a.txt")
+    sibling.mkdir(parents=True)
+
+    assert _sibling_rows(tmp_path) == []

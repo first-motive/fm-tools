@@ -21,6 +21,11 @@ Five derived kinds are synthesized on top:
   entry: the registry names five repos and a workspace holds every repo the
   render plane reaches
 
+A sixth derived kind reuses the registry's ``clone`` label rather than adding a
+new one: fm-data's canonical checkout and an fm-ros2-workspace-adjacent sibling
+clone are graded as one ``clone`` row, ``warn``, when both exist and their
+``HEAD`` commits differ.
+
 Every row carries a ``level``: ``pass``, ``fail``, or ``warn``. Only ``fail``
 moves the exit code, so ``doctor`` still drops into CI as a gate while the
 undeclared-script heuristic nudges without breaking a build over a judgement call.
@@ -138,6 +143,56 @@ def _guard_rows(base: Path) -> list[dict]:
         ok = done.stdout.strip() == HOOKS_PATH
         rows.append(_row(name, "push guard enabled", "guard", "pass" if ok else "fail"))
     return rows
+
+
+def _head_sha(path: Path) -> str | None:
+    done = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    sha = done.stdout.strip()
+    return sha if done.returncode == 0 and sha else None
+
+
+def _head_branch(path: Path) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    return done.stdout.strip() or "HEAD"
+
+
+def _two_clone_rows(base: Path) -> list[dict]:
+    """Warn when a sibling ``fm-data`` clone diverges from the checkout ``fm`` uses.
+
+    fm-data's canonical checkout is nested inside fm_ros2's colcon workspace
+    (see ``Repo.checkout``); a Mac working on fm-data alone commonly also holds
+    a bare sibling clone at the workspace root, and ``fm`` always prefers the
+    canonical one when both exist. Silently ignoring the sibling is fine until
+    it diverges — then commands answer from a commit nobody is looking at.
+
+    Both paths come from the registry (``Repo.local_dir`` and ``Repo.name``),
+    never as literals here. No row when there is only one clone, the two paths
+    coincide, the sibling is not a git checkout, or the commits match.
+    """
+    repo = next((r for r in REPOS if r.name == "fm-data"), None)
+    if repo is None:
+        return []
+    canonical = base / repo.local_dir
+    sibling = base / repo.name
+    if canonical == sibling:
+        return []
+    if not (canonical / ".git").exists() or not (sibling / ".git").exists():
+        return []
+    canonical_sha = _head_sha(canonical)
+    sibling_sha = _head_sha(sibling)
+    if canonical_sha is None or sibling_sha is None or canonical_sha == sibling_sha:
+        return []
+    check = (
+        f"sibling fm-data at {_head_branch(sibling)}@{sibling_sha} is not the "
+        f"checkout fm uses ({canonical_sha})"
+    )
+    return [_row(repo.name, check, "clone", "warn")]
 
 
 def _manifest_rows(base: Path) -> list[dict]:
@@ -302,6 +357,7 @@ def gather_checks(base: Path | None = None, fetch: bool = True) -> list[dict]:
     rows.extend(_version_rows(root))
     rows.extend(_health_rows(root))
     rows.extend(_guard_rows(root))
+    rows.extend(_two_clone_rows(root))
     return rows
 
 
