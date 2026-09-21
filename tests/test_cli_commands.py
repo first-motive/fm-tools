@@ -11,6 +11,17 @@ from fm_tools.cli.registry import REPOS
 FM_ROS2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
 
 
+def test_operation_metadata_is_reported_without_claiming_remote_support(tmp_path, monkeypatch, capsys):
+    metadata = {"robot.mode": {"target": "robot", "effect": "write", "future_field": True}}
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    _mounted(tmp_path, {"robot": {"script": "scripts/run/robot.sh", "operations": metadata}})
+    assert main(["commands", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    row = next(row for row in rows if row["verb"] == "robot")
+    assert row["operations"] == metadata
+    assert "available" not in row
+
+
 def _mounted(root, commands):
     """Give fm-ros2 a manifest whose declared scripts all exist and run."""
     checkout = root / FM_ROS2.local_dir

@@ -34,6 +34,14 @@ def test_no_manifest_is_not_a_problem(tmp_path):
     assert problems == []
 
 
+@pytest.mark.parametrize("operations", [[], "mode", {"robot.mode": []}, {"": {}}])
+def test_invalid_operation_metadata_is_reported(tmp_path, operations):
+    _manifest(tmp_path, FM_ROS2, {"robot": {"script": "robot.sh", "operations": operations}})
+    commands, problems = load_manifest(FM_ROS2, tmp_path)
+    assert commands == []
+    assert problems[0].kind == "schema"
+
+
 def test_sibling_data_clone_is_discovered_and_reported_consistently(tmp_path, monkeypatch, capsys):
     import subprocess
 

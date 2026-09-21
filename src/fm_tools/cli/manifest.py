@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json as jsonlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .broker import CREDENTIALS
@@ -67,6 +67,7 @@ class Command:
     help: str = ""
     credentials: tuple[str, ...] = ()
     healthcheck: tuple[str, ...] = ()
+    operations: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,13 @@ def _entry_command(
     ):
         return None, Problem("schema", repo.name, f"{name}: 'healthcheck' must be a list of arguments")
 
+    operations = entry.get("operations", {})
+    if not isinstance(operations, dict) or not all(
+        isinstance(identity, str) and identity and isinstance(metadata, dict)
+        for identity, metadata in operations.items()
+    ):
+        return None, Problem("schema", repo.name, f"{name}: 'operations' must map identities to objects")
+
     command = Command(
         name=name,
         repo=repo.name,
@@ -138,6 +146,7 @@ def _entry_command(
         help=str(entry.get("help", "")),
         credentials=tuple(declared),
         healthcheck=tuple(healthcheck),
+        operations=operations,
     )
     if not script.is_file():
         return command, Problem("missing", repo.name, f"{name}: {raw} does not exist")

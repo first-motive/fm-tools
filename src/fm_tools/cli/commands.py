@@ -155,6 +155,7 @@ def catalogue(discovery: Discovery, root: Path | None = None) -> list[dict]:
             "help": command.help,
             "kind": "manifest",
             "delegates": [],
+            **({"operations": command.operations} if command.operations else {}),
         }
         for name, command in sorted(discovery.commands.items())
     )
