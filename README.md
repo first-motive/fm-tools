@@ -153,6 +153,14 @@ truth for its own interface. Two repos claiming one verb is reported by
 shadow a built-in verb. `fm --help` lists whatever the repos on this machine
 declare, and `fm commands --json` says the same thing to an agent.
 
+A command can also supply an `operations` object. Each key is a stable operation
+ID; its value is owner-defined metadata such as `owner`, `target`, `inputs`,
+`effect`, `confirmation`, `result`, and `availability`. `fm commands --json`
+preserves these objects and their unknown fields. Older manifests need no
+change. This describes the local checkout; it does not prove that a remote
+service supports an operation. Clients must check the selected service before
+they enable a remote action. Validation remains with the operation's owner.
+
 A command can declare `"healthcheck": ["preflight", "--json"]`. Doctor runs
 that script with those arguments and a 30-second timeout. The command owner
 must keep the check read-only and return
