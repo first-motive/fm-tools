@@ -294,17 +294,73 @@ def main(argv: list[str] | None = None) -> int:
     assessment.add_argument("--profile", required=True)
     assessment.add_argument("--anvil-report", type=Path)
     assessment.add_argument("--json", action="store_true")
+    preview = sub.add_parser("preview", help="decode all cameras at a proposed retained interval")
+    preview.add_argument("--source-root", type=Path, required=True)
+    preview.add_argument("--contract-dir", type=Path, required=True)
+    preview.add_argument("--report-dir", type=Path, required=True)
+    preview.add_argument("--state-root", type=Path, required=True)
+    preview.add_argument("--consumer-project", type=Path, required=True)
+    preview.add_argument("--episode", type=int, required=True)
+    preview.add_argument("--start", type=int, required=True)
+    preview.add_argument("--stop", type=int, required=True)
+    preview.add_argument("--json", action="store_true")
+    review = sub.add_parser("review", help="draft, validate, or approve a complete episode ledger")
+    review_sub = review.add_subparsers(dest="review_verb", required=True)
+    for name in ("draft", "validate", "approve"):
+        command = review_sub.add_parser(name)
+        command.add_argument("--source-root", type=Path, required=True)
+        command.add_argument("--contract-dir", type=Path, required=True)
+        command.add_argument("--report-dir", type=Path, required=True)
+        command.add_argument("--json", action="store_true")
+        if name == "draft":
+            command.add_argument("--output", type=Path, required=True)
+        else:
+            command.add_argument("--review-file", type=Path, required=True)
+        if name == "approve":
+            command.add_argument("--state-root", type=Path, required=True)
+            command.add_argument("--reviewer", required=True)
+            command.add_argument("--human-attestation", action="store_true")
+    derivative = sub.add_parser("derive", help="write and verify a reviewed derivative")
+    derivative.add_argument("--source-root", type=Path, required=True)
+    derivative.add_argument("--contract-dir", type=Path, required=True)
+    derivative.add_argument("--report-dir", type=Path, required=True)
+    derivative.add_argument("--state-root", type=Path, required=True)
+    derivative.add_argument("--output-root", type=Path, required=True)
+    derivative.add_argument("--consumer-project", type=Path, required=True)
+    derivative.add_argument("--approval-file", type=Path, required=True)
+    derivative.add_argument("--cancel-file", type=Path)
+    derivative.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.verb == "profiles":
             data = {key: {**value, "digest": _digest(value)} for key, value in PROFILES.items()}
         elif args.verb == "contract":
             data = _contract(args)
-        else:
+        elif args.verb == "assess":
             from fm_tools.data_assess import assess
 
             data = assess(args)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        elif args.verb == "preview":
+            from fm_tools.data_derive import preview as run_preview
+
+            data = run_preview(args)
+        elif args.verb == "derive":
+            from fm_tools.data_derive import derive as run_derive
+
+            data = run_derive(args)
+        else:
+            from fm_tools.data_review import approve, draft, validate
+
+            if args.review_verb == "draft":
+                data = draft(args)
+            elif args.review_verb == "validate":
+                review_data, _, _ = validate(args)
+                data = {"status": "valid", "review_digest": _digest(review_data),
+                        "includes": sum(item["decision"] == "include" for item in review_data["decisions"]),
+                        "approved": False}
+            else:
+                data = approve(args)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
         if args.json:
             print(json.dumps({"schema_version": SCHEMA_VERSION, "verb": args.verb, "status": "refused", "reason": str(exc)}))
         else:

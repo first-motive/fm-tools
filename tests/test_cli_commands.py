@@ -260,3 +260,105 @@ def test_assessment_refuses_a_source_that_differs_from_p0(tmp_path, monkeypatch,
     ]) == 3
     assert "source identity differs" in json.loads(capsys.readouterr().out)["reason"]
     assert not (tmp_path / "state").exists()
+
+
+def test_review_requires_preview_and_human_attestation_then_rejects_stale_revision(tmp_path, monkeypatch):
+    import hashlib
+    from fm_tools.data_refine import _digest, _inventory
+    from fm_tools.data_review import approve, draft, validate, verify_approval
+    from argparse import Namespace
+
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    (source / "meta" / "info.json").write_text("{}")
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    files = _inventory(source)
+    manifest = {"schema_version": 1, "kind": "robot_data_source", "files": files,
+                "content_digest": _digest(files), "repo_id": "first-motive/example",
+                "dataset_info": {"fps": 30, "features": {"observation.images.chest": {"dtype": "video"}}},
+                "source_map": [{"episode_index": 0, "row_start": 0, "row_stop": 3},
+                               {"episode_index": 1, "row_start": 3, "row_stop": 5}]}
+    (contract / "source.json").write_text(json.dumps(manifest))
+    (contract / "consumer.json").write_text(json.dumps({"schema_version": 1,
+        "source_digest": _digest(files), "profiles": {"smolvla-checkers-v1": {"profile_digest": "profile"}}}))
+    report = {"schema_version": 1, "kind": "robot_data_report", "source_digest": _digest(files),
+              "repo_id": "first-motive/example", "profile_id": "smolvla-checkers-v1",
+              "profile_digest": "profile", "policy_project_revision": "revision",
+              "episodes": [{"episode_index": 0}, {"episode_index": 1}], "findings": []}
+    report_dir = tmp_path / _digest(report)
+    report_dir.mkdir()
+    (report_dir / "report.json").write_text(json.dumps(report))
+    review_file = tmp_path / "review.json"
+    args = Namespace(source_root=source, contract_dir=contract, report_dir=report_dir,
+                     output=review_file, review_file=review_file, state_root=tmp_path / "state",
+                     reviewer="Matthew", human_attestation=False)
+    assert draft(args)["episodes"] == 2
+    review = json.loads(review_file.read_text())
+    review["decisions"][0].update(decision="include", start=1, stop=3, reason="keep this interval")
+    review["decisions"][1].update(decision="exclude", reason="failed take")
+    review_file.write_text(json.dumps(review))
+    try:
+        validate(args)
+    except ValueError as exc:
+        assert "needs exact-frame preview" in str(exc)
+    else:
+        assert False, "include without preview must fail"
+    preview = tmp_path / "preview"
+    preview.mkdir()
+    image = preview / "observation_images_chest-000001.png"
+    image.write_bytes(b"preview frame one")
+    second = preview / "observation_images_chest-000002.png"
+    second.write_bytes(b"preview frame two")
+    third = preview / "observation_images_chest-000000.png"
+    third.write_bytes(b"preview frame zero")
+    receipt = {"schema_version": 1, "kind": "robot_data_preview", "source_digest": _digest(files),
+               "report_digest": _digest(report), "episode_index": 0, "start": 1, "stop": 3,
+               "cameras": ["observation.images.chest"], "frames": [0, 1, 2],
+               "files": [{"path": path.name, "bytes": path.stat().st_size,
+                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                         for path in sorted(preview.glob("*.png"))]}
+    (preview / "preview.json").write_text(json.dumps(receipt))
+    review["decisions"][0]["preview_artifact"] = str(preview)
+    review_file.write_text(json.dumps(review))
+    checked, _, _ = validate(args)
+    assert checked["decisions"][0]["preview_digest"] == _digest(receipt)
+    try:
+        approve(args)
+    except ValueError as exc:
+        assert "human attestation" in str(exc)
+    else:
+        assert False, "approval without human attestation must fail"
+    args.human_attestation = True
+    approved = approve(args)
+    assert verify_approval(Path(approved["approval_file"]), args.state_root, manifest, report)["reviewer"] == "Matthew"
+    from fm_tools.data_derive import derive
+
+    args.approval_file = Path(approved["approval_file"])
+    args.output_root = tmp_path / "output"
+    args.consumer_project = tmp_path / "policy"
+    args.cancel_file = None
+    monkeypatch.setattr("fm_tools.data_derive._project", lambda *_: args.consumer_project)
+    def media_failure(*_):
+        raise ValueError("media decode failed")
+    monkeypatch.setattr("fm_tools.data_derive._run", media_failure)
+    try:
+        derive(args)
+    except ValueError as exc:
+        assert "media decode failed" in str(exc)
+    else:
+        assert False, "media failure must refuse derivative"
+    assert not list(args.output_root.rglob("derivative.json"))
+    try:
+        approve(args)
+    except ValueError as exc:
+        assert "stale review" in str(exc)
+    else:
+        assert False, "concurrent approval must conflict"
+    image.write_bytes(b"changed preview")
+    try:
+        derive(args)
+    except ValueError as exc:
+        assert "preview images changed" in str(exc)
+    else:
+        assert False, "changed preview must refuse derivative"
