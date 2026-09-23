@@ -77,6 +77,37 @@ which contract it is reading:
 disappears — never when one is added, since a reader that ignores unknown keys
 keeps working.
 
+### Robot data Phase 0 contract
+
+`fm data-refine profiles --json` shows the versioned ACT and SmolVLA
+requirements and their digests. `fm data-refine contract` freezes one existing
+LeRobot v3 dataset and checks sample frames through the installed FM Policy
+consumer. It does not change the dataset or approve it for training.
+
+```bash
+fm data-refine contract \
+  --source-root /opt/fm/data/hf/lerobot/first-motive/checkers-bag-v1 \
+  --state-root /opt/fm/data/robot-data-processing/p0 \
+  --consumer-project /opt/fm/fm-policy \
+  --repo-id first-motive/checkers-bag-v1 \
+  --sample 0:left --sample 4:right --json
+```
+
+The caller supplies each sample episode ID and its role from a reviewed run
+note. The command does not infer the active arm from joint values. Run v2 with
+`--sample 36:handover` as well. The source and state roots must be separate.
+The FM Policy project must have its installed `uv` environment and cached
+consumer assets; the check runs offline.
+
+The version 1 result points to two files in a content-addressed directory:
+`source.json` records full file hashes, LeRobot metadata, tasks, episode row
+ranges, and video offsets; `consumer.json` records the FM Policy revision,
+LeRobot version, profile digests, resolved action windows, sample frame results,
+and unknown semantics. Both files have `schema_version: 1`. A repeat run reuses
+the directory only when both files match. Any source change or conflicting
+destination is refused. `training_ready: false` remains explicit until later
+assessment and human review resolve the missing evidence.
+
 Verbs that act, each by handing the work to a repo's own script:
 
 | Verb                        | Does                                                |
