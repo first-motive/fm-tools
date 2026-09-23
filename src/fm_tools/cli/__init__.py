@@ -341,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_bypass(argv[1:])
 
+    if argv and argv[0] == "data-refine":
+        from fm_tools.data_refine import main as run_data_refine
+
+        return run_data_refine(argv[1:])
+
     discovery = discover(root, reserved=BUILTIN_VERBS)
 
     if argv and argv[0] not in BUILTIN_VERBS and not argv[0].startswith("-"):

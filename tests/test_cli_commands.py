@@ -123,3 +123,41 @@ def test_a_non_delegating_builtin_reports_none(tmp_path):
     rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS), tmp_path)
     listing = next(row for row in rows if row["verb"] == "list")
     assert listing["delegates"] == []
+
+
+def test_data_refine_profiles_are_discoverable_and_require_semantic_evidence(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    assert main(["data-refine", "profiles", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert set(result["data"]) == {"smolvla-checkers-v1", "act-checkers-v1"}
+    assert all("state_action_units" in profile["required_evidence"] for profile in result["data"].values())
+    rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS))
+    assert next(row for row in rows if row["verb"] == "data-refine")["kind"] == "forwarding"
+
+
+def test_data_refine_refuses_a_source_change_before_promotion(tmp_path, monkeypatch, capsys):
+    from subprocess import CompletedProcess
+
+    from fm_tools import data_refine
+
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    (source / "meta" / "info.json").write_text('{"codebase_version":"v3.0"}')
+    payload = source / "data.bin"
+    payload.write_bytes(b"first")
+    project = tmp_path / "policy"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='policy'\n")
+
+    def changed_source(*args, **kwargs):
+        payload.write_bytes(b"changed")
+        return CompletedProcess(args[0], 0, json.dumps({"dataset_info": {}, "tasks": [], "source_map": []}), "")
+
+    monkeypatch.setattr(data_refine.subprocess, "run", changed_source)
+    assert main([
+        "data-refine", "contract", "--source-root", str(source),
+        "--state-root", str(tmp_path / "state"), "--consumer-project", str(project),
+        "--repo-id", "first-motive/example", "--sample", "0:left", "--json",
+    ]) == 3
+    assert "source changed" in json.loads(capsys.readouterr().out)["reason"]
+    assert not (tmp_path / "state").exists()
