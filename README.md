@@ -108,6 +108,34 @@ the directory only when both files match. Any source change or conflicting
 destination is refused. `training_ready: false` remains explicit until later
 assessment and human review resolve the missing evidence.
 
+### Robot data Phase 1 report
+
+`fm data-refine assess` uses a P0 contract as source registration. It refuses
+changed source bytes or an unknown profile. It reads every Parquet row through
+the installed FM Policy environment and writes a version 1 report outside the
+source. The optional Anvil report is copied by hash and kept as raw-batch
+evidence; old raw-to-converted episode links remain unproven.
+
+```bash
+fm data-refine assess \
+  --source-root /opt/fm/data/hf/lerobot/first-motive/checkers-bag-v1 \
+  --contract-dir /opt/fm/data/robot-data-processing/p0/first-motive_checkers-bag-v1/<source-digest> \
+  --state-root /opt/fm/data/robot-data-processing/p1 \
+  --consumer-project /opt/fm/fm-policy \
+  --profile smolvla-checkers-v1 \
+  --anvil-report /opt/fm/data/recordings/checkers-bag-v1/mcap_valid_reports/report.json \
+  --json
+```
+
+The report counts every episode and frame, checks row IDs, task references,
+timestamps, all numeric vectors, and declared camera ranges. It reports task
+and known role coverage; session, layout, outcome, and unresolved physical
+semantics stay unknown. It classifies critical raw findings without approving
+an exception. ACT reports incompatible task mixing; SmolVLA keeps instruction
+grounding open. A repeated run with the same inputs returns the same report
+digest. Full media decoding, reviewed decisions, derivatives, and training
+handoff are later phases.
+
 Verbs that act, each by handing the work to a repo's own script:
 
 | Verb                        | Does                                                |
