@@ -136,6 +136,52 @@ grounding open. A repeated run with the same inputs returns the same report
 digest. Full media decoding, reviewed decisions, derivatives, and training
 handoff are later phases.
 
+### Robot data Phase 2 review and derivative
+
+`fm data-refine review draft` writes one `hold` decision per P0 episode to a
+new JSON file outside the source. A reviewer edits the complete ledger: each
+episode is `include`, `exclude`, or `hold`. An include has one half-open source
+frame interval `[start, stop)`, a reason, and a `preview_artifact` produced by
+`fm data-refine preview`. The preview decodes every required camera at the
+first and last retained frame and on both sides of each cut. Its receipt names
+source frame IDs and timestamps and hashes the PNG files. Source and retained
+outcomes are separate fields; both start as `unknown`.
+
+```bash
+fm data-refine review draft \
+  --source-root SOURCE --contract-dir P0_CONTRACT --report-dir P1_REPORT \
+  --output REVIEW.json --json
+
+fm data-refine preview \
+  --source-root SOURCE --contract-dir P0_CONTRACT --report-dir P1_REPORT \
+  --state-root P2_STATE --consumer-project FM_POLICY \
+  --episode 0 --start 0 --stop 100 --json
+
+fm data-refine review validate \
+  --source-root SOURCE --contract-dir P0_CONTRACT --report-dir P1_REPORT \
+  --review-file REVIEW.json --json
+```
+
+Validation requires an exact decision for every source episode, at least one
+include, valid intervals, all-camera preview evidence, and unchanged P0/P1
+digests. It does not approve the review. A human reviewer inspects the preview
+images and uses `review approve` with `--reviewer`, `--human-attestation`,
+`--state-root`, and the same source, contract, report and review arguments.
+That command checks the expected revision under a lock and writes an immutable
+approval record. An agent must not supply a reviewer name or attestation for
+real data. A changed report, source, preview, or concurrent revision refuses.
+
+`fm data-refine derive` takes that approval record with the same source,
+contract, report, state and FM Policy paths plus `--output-root`. It uses the
+installed LeRobot writer to copy only approved intervals into a temporary v3
+dataset. A second read checks every output row, task, state/action vector, and
+required camera frame against its mapped source frame. The receipt records the
+source-frame map, full output hashes, video encoder metadata and measured pixel
+error; re-encoding does not promise identical pixels. Only verified output is
+promoted. A `--cancel-file` stops work before promotion. Repeat input reuses
+the verified result. The derivative remains `training_ready: false` until the
+Phase 3 consumer and split checks pass.
+
 Verbs that act, each by handing the work to a repo's own script:
 
 | Verb                        | Does                                                |
