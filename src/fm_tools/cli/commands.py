@@ -78,7 +78,7 @@ BUILTINS: tuple[Builtin, ...] = (
     Builtin("device", "the fleet: list, ssh, tunnel, adopt a robot", forwarding=True),
     Builtin("diagram", "every diagram in the workspace: list, render, check, watch", forwarding=True),
     Builtin("run", "run a raw command and record it as a missing verb", forwarding=True),
-    Builtin("data-refine", "freeze a robot dataset and prove its training contract", forwarding=True),
+    Builtin("data-refine", "freeze and assess a robot dataset", forwarding=True),
 )
 
 FORWARDING_VERBS = frozenset(entry.name for entry in BUILTINS if entry.forwarding)
@@ -93,7 +93,7 @@ FORWARDING_USAGE: dict[str, str] = {
     "device": "device list|ssh|tunnel [args...]",
     "diagram": "diagram list|render|check|watch",
     "run": "run -- <command> [args...]",
-    "data-refine": "data-refine profiles|contract [args...]",
+    "data-refine": "data-refine profiles|contract|assess [args...]",
 }
 
 

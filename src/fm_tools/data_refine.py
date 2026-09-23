@@ -286,10 +286,25 @@ def main(argv: list[str] | None = None) -> int:
     contract.add_argument("--repo-id", required=True)
     contract.add_argument("--sample", dest="samples", type=_sample, action="append", default=[])
     contract.add_argument("--json", action="store_true")
+    assessment = sub.add_parser("assess", help="assess a P0 source without changing it")
+    assessment.add_argument("--source-root", type=Path, required=True)
+    assessment.add_argument("--contract-dir", type=Path, required=True)
+    assessment.add_argument("--state-root", type=Path, required=True)
+    assessment.add_argument("--consumer-project", type=Path, required=True)
+    assessment.add_argument("--profile", required=True)
+    assessment.add_argument("--anvil-report", type=Path)
+    assessment.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        data = {key: {**value, "digest": _digest(value)} for key, value in PROFILES.items()} if args.verb == "profiles" else _contract(args)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if args.verb == "profiles":
+            data = {key: {**value, "digest": _digest(value)} for key, value in PROFILES.items()}
+        elif args.verb == "contract":
+            data = _contract(args)
+        else:
+            from fm_tools.data_assess import assess
+
+            data = assess(args)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         if args.json:
             print(json.dumps({"schema_version": SCHEMA_VERSION, "verb": args.verb, "status": "refused", "reason": str(exc)}))
         else:

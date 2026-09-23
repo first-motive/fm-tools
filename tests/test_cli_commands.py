@@ -161,3 +161,102 @@ def test_data_refine_refuses_a_source_change_before_promotion(tmp_path, monkeypa
     ]) == 3
     assert "source changed" in json.loads(capsys.readouterr().out)["reason"]
     assert not (tmp_path / "state").exists()
+
+
+def test_anvil_import_keeps_critical_classes_without_approving_them(tmp_path):
+    from fm_tools.data_assess import _anvil_report
+
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"episodes": [
+        {"path": "/raw/0001/0001_0.mcap", "severity": "critical", "topics": [
+            {"topic": "/commands", "role": "action", "severity": "critical",
+             "message_count": 0, "longest_gap_s": 0, "reason": "topic absent"},
+        ]},
+        {"path": "/raw/0046/0046_0.mcap", "severity": "critical", "topics": [
+            {"topic": "/camera", "role": "stream", "severity": "critical",
+             "message_count": 10, "longest_gap_s": 0.95, "reason": "gap"},
+        ]},
+    ]}))
+    imported, raw = _anvil_report(report)
+    assert imported["critical_classes"] == {
+        "absent_action_topic_review_required": 1, "stream_gap_blocked": 1,
+    }
+    assert imported["linkage_to_converted"] == "unproven"
+    assert raw == report.read_bytes()
+
+
+def test_assessment_counts_every_episode_and_frame_without_inferred_arm():
+    from fm_tools.data_assess import _report
+    from fm_tools.data_refine import PROFILES, _digest
+
+    manifest = {
+        "repo_id": "first-motive/example", "content_digest": "source",
+        "files": [{"path": "videos/chest.mp4"}],
+        "dataset_info": {"fps": 30, "features": {"observation.images.chest": {"dtype": "video"}}},
+        "source_map": [
+            {"episode_index": 0, "row_start": 0, "row_stop": 3, "tasks": ["pick"], "videos": {
+                "observation.images.chest": {"file": "videos/chest.mp4", "from_timestamp": 0.0,
+                                              "to_timestamp": 3 / 30},
+            }},
+            {"episode_index": 1, "row_start": 3, "row_stop": 5, "tasks": ["place"], "videos": {
+                "observation.images.chest": {"file": "videos/chest.mp4", "from_timestamp": 3 / 30,
+                                              "to_timestamp": 5 / 30},
+            }},
+        ],
+    }
+    consumer = {
+        "policy_project_revision": "revision", "unknown_semantics": ["state_action_units"],
+        "profiles": {"smolvla-checkers-v1": {
+            "profile_digest": _digest(PROFILES["smolvla-checkers-v1"]),
+            "samples": [{"episode_index": 0, "role_from_run_note": "left"}],
+        }},
+    }
+    scan = {"pyarrow_version": "test", "episodes": [
+        {"episode_index": 0, "frames": 3, "invalid_vectors": {}, "invalid_index": 0,
+         "invalid_task": 0, "invalid_time": 0, "gap_count": 0},
+        {"episode_index": 1, "frames": 2, "invalid_vectors": {}, "invalid_index": 0,
+         "invalid_task": 0, "invalid_time": 0, "gap_count": 0},
+    ]}
+    report = _report(manifest, consumer, "smolvla-checkers-v1", scan, None)
+    assert report["totals"] == {"episodes": 2, "frames": 5, "fps": 30}
+    assert report["coverage"]["tasks"] == {
+        "pick": {"episodes": 1, "frames": 3}, "place": {"episodes": 1, "frames": 2},
+    }
+    assert report["coverage"]["roles_from_run_note"]["unknown"]["frames"] == 2
+    assert "camera_duration_mismatch" not in {item["code"] for item in report["findings"]}
+    assert report["training_ready"] is False
+    assert _digest(report) == _digest(_report(manifest, consumer, "smolvla-checkers-v1", scan, None))
+
+
+def test_assessment_refuses_a_source_that_differs_from_p0(tmp_path, monkeypatch, capsys):
+    from fm_tools.data_refine import PROFILES, _digest, _inventory
+
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    info = source / "meta" / "info.json"
+    info.write_text('{"codebase_version":"v3.0"}')
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    files = _inventory(source)
+    (contract / "source.json").write_text(json.dumps({
+        "schema_version": 1, "kind": "robot_data_source", "files": files,
+        "content_digest": _digest(files), "repo_id": "first-motive/example",
+    }))
+    (contract / "consumer.json").write_text(json.dumps({
+        "schema_version": 1, "source_digest": _digest(files),
+        "profiles": {"smolvla-checkers-v1": {
+            "profile_digest": _digest(PROFILES["smolvla-checkers-v1"]),
+        }},
+    }))
+    project = tmp_path / "policy"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='policy'\n")
+    info.write_text('{"codebase_version":"v2.0"}')
+    assert main([
+        "data-refine", "assess", "--source-root", str(source),
+        "--contract-dir", str(contract), "--state-root", str(tmp_path / "state"),
+        "--consumer-project", str(project), "--profile", "smolvla-checkers-v1", "--json",
+    ]) == 3
+    assert "source identity differs" in json.loads(capsys.readouterr().out)["reason"]
+    assert not (tmp_path / "state").exists()
