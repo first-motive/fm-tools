@@ -140,6 +140,9 @@ def _internal_split(request: dict) -> dict:
 
     dataset = LeRobotDataset(request["repo_id"], root=request["dataset"], video_backend="pyav")
     result = split_dataset(dataset, request["splits"], output_dir=request["output"])
+    for name in result:
+        stats = Path(request["output"]) / name / "meta" / "stats.json"
+        stats.write_bytes(_canonical(json.loads(stats.read_text())) + b"\n")
     return {name: {"repo_id": output.repo_id, "episodes": output.meta.total_episodes,
                    "frames": len(output), "statistics_sha256": hashlib.sha256(
                        (Path(request["output"]) / name / "meta" / "stats.json").read_bytes()
