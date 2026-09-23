@@ -268,6 +268,8 @@ def test_review_requires_preview_and_human_attestation_then_rejects_stale_revisi
     from fm_tools.data_review import approve, draft, validate, verify_approval
     from argparse import Namespace
 
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "runtime-state"))
+
     source = tmp_path / "source"
     (source / "meta").mkdir(parents=True)
     (source / "meta" / "info.json").write_text("{}")
@@ -362,3 +364,128 @@ def test_review_requires_preview_and_human_attestation_then_rejects_stale_revisi
         assert "preview images changed" in str(exc)
     else:
         assert False, "changed preview must refuse derivative"
+
+
+def test_phase3_handoff_binds_full_consumer_result_but_blocks_unproved_training(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from fm_tools.data_handoff import verify
+    from fm_tools.data_refine import _digest, _inventory
+
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    (source / "meta" / "info.json").write_text("{}")
+    files = _inventory(source)
+    manifest = {"schema_version": 1, "kind": "robot_data_source", "repo_id": "first-motive/example",
+                "content_digest": _digest(files), "files": files, "source_map": [{"episode_index": 0}],
+                "dataset_info": {}}
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    (contract / "source.json").write_text(json.dumps(manifest))
+    (contract / "consumer.json").write_text(json.dumps({"schema_version": 1,
+        "source_digest": manifest["content_digest"], "unknown_semantics": ["action_representation"],
+        "profiles": {"act-checkers-v1": {"profile_digest": "profile"}}}))
+    report = {"schema_version": 1, "kind": "robot_data_report", "repo_id": "first-motive/example",
+              "source_digest": manifest["content_digest"], "profile_id": "act-checkers-v1",
+              "profile_digest": "profile", "policy_project_revision": "revision",
+              "totals": {"frames": 1}, "episodes": [{"episode_index": 0}], "findings": []}
+    report_dir = tmp_path / _digest(report)
+    report_dir.mkdir()
+    (report_dir / "report.json").write_text(json.dumps(report))
+    monkeypatch.setattr("fm_tools.data_handoff._project", lambda *_: tmp_path)
+    monkeypatch.setattr("fm_tools.data_handoff._consumer", lambda *_: {
+        "status": "verified", "frames": 1, "all_rows_and_required_media_decoded": True,
+    })
+    args = Namespace(source_root=source, contract_dir=contract, report_dir=report_dir,
+                     consumer_project=tmp_path, state_root=tmp_path / "handoffs",
+                     artifact_dir=None, approval_file=None, review_state_root=None, split_dir=None)
+    result = verify(args)
+    assert result["consumer_verified"] and not result["training_ready"]
+    assert "train_only_statistics_unproven" in result["limitations"]
+    assert verify(args)["status"] == "reused"
+    (source / "meta" / "info.json").write_text('{"changed":true}')
+    try:
+        verify(args)
+    except ValueError as exc:
+        assert "source identity differs" in str(exc)
+    else:
+        assert False, "changed source must refuse handoff"
+
+
+def test_phase3_job_replay_rejects_changed_request(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from fm_tools.data_jobs import status, submit, worker
+
+    class Worker:
+        pid = __import__("os").getpid()
+
+    monkeypatch.setattr("fm_tools.data_jobs.subprocess.Popen", lambda *_args, **_kwargs: Worker())
+    parameters = {name: str(tmp_path / name) for name in (
+        "source_root", "contract_dir", "report_dir", "state_root", "output_root",
+        "consumer_project", "approval_file",
+    )}
+    request = {"schema_version": 1, "operation": "derive", "request_id": "p3-check",
+               "parameters": parameters}
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(request))
+    args = Namespace(job_root=tmp_path / "jobs", request_file=request_file)
+    first = submit(args)
+    assert first["state"] == "queued"
+    assert submit(args) == first
+    request["parameters"]["output_root"] = str(tmp_path / "different-output")
+    request_file.write_text(json.dumps(request))
+    try:
+        submit(args)
+    except ValueError as exc:
+        assert "different content" in str(exc)
+    else:
+        assert False, "one request ID cannot name two payloads"
+    job = args.job_root / "p3-check"
+    (job / "pid.json").write_text('{"pid":99999999}')
+    assert status(Namespace(job_root=args.job_root, request_id="p3-check"))["state"] == "interrupted"
+    request["request_id"] = "p3-retry"
+    request_file.write_text(json.dumps(request))
+    assert submit(args)["state"] == "queued"
+    (job / "cancel").touch()
+    worker(job)
+    assert status(Namespace(job_root=args.job_root, request_id="p3-check"))["state"] == "cancelled"
+
+
+def test_phase3_split_plan_keeps_related_episodes_together(tmp_path):
+    from fm_tools.data_refine import _digest
+    from fm_tools.data_split import _plan
+
+    manifest = {"content_digest": "source"}
+    report = {"profile_id": "act-checkers-v1"}
+    receipt = {"source_frame_map": [{"output_episode_index": 0}, {"output_episode_index": 1}]}
+    plan = {"schema_version": 1, "kind": "robot_data_split_plan", "source_digest": "source",
+            "report_digest": _digest(report), "derivative_digest": _digest(receipt),
+            "assignments": [
+                {"output_episode_index": 0, "group_id": "session-a", "split": "train", "evidence": "run note"},
+                {"output_episode_index": 1, "group_id": "session-a", "split": "validation", "evidence": "run note"},
+            ]}
+    path = tmp_path / "split.json"
+    path.write_text(json.dumps(plan))
+    try:
+        _plan(path, manifest, report, receipt)
+    except ValueError as exc:
+        assert "cross split" in str(exc)
+    else:
+        assert False, "related episodes cannot be in train and validation"
+    plan["assignments"][1]["group_id"] = "session-b"
+    path.write_text(json.dumps(plan))
+    _, groups = _plan(path, manifest, report, receipt)
+    assert groups == {"train": [0], "validation": [1]}
+
+
+def test_phase3_media_writer_refuses_a_second_writer(tmp_path, monkeypatch):
+    from fm_tools.data_derive import _writer_lock
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    with _writer_lock():
+        try:
+            with _writer_lock():
+                pass
+        except ValueError as exc:
+            assert "busy worker" in str(exc)
+        else:
+            assert False, "a second media writer must not start"

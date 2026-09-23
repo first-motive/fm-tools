@@ -330,6 +330,40 @@ def main(argv: list[str] | None = None) -> int:
     derivative.add_argument("--approval-file", type=Path, required=True)
     derivative.add_argument("--cancel-file", type=Path)
     derivative.add_argument("--json", action="store_true")
+    verify = sub.add_parser("verify", help="verify all consumer rows and write a blocked or ready handoff")
+    verify.add_argument("--source-root", type=Path, required=True)
+    verify.add_argument("--contract-dir", type=Path, required=True)
+    verify.add_argument("--report-dir", type=Path, required=True)
+    verify.add_argument("--consumer-project", type=Path, required=True)
+    verify.add_argument("--state-root", type=Path, required=True)
+    verify.add_argument("--artifact-dir", type=Path)
+    verify.add_argument("--approval-file", type=Path)
+    verify.add_argument("--review-state-root", type=Path)
+    verify.add_argument("--split-dir", type=Path)
+    verify.add_argument("--json", action="store_true")
+    split = sub.add_parser("split", help="write separate grouped data and train-only statistics")
+    split.add_argument("--source-root", type=Path, required=True)
+    split.add_argument("--contract-dir", type=Path, required=True)
+    split.add_argument("--report-dir", type=Path, required=True)
+    split.add_argument("--artifact-dir", type=Path, required=True)
+    split.add_argument("--approval-file", type=Path, required=True)
+    split.add_argument("--review-state-root", type=Path, required=True)
+    split.add_argument("--split-plan", type=Path, required=True)
+    split.add_argument("--output-root", type=Path, required=True)
+    split.add_argument("--consumer-project", type=Path, required=True)
+    split.add_argument("--json", action="store_true")
+    jobs = sub.add_parser("job", help="submit, inspect, wait for, or cancel a durable derive job")
+    job_sub = jobs.add_subparsers(dest="job_verb", required=True)
+    for name in ("submit", "status", "wait", "cancel"):
+        command = job_sub.add_parser(name)
+        command.add_argument("--job-root", type=Path, required=True)
+        command.add_argument("--json", action="store_true")
+        if name == "submit":
+            command.add_argument("--request-file", type=Path, required=True)
+        else:
+            command.add_argument("--request-id", required=True)
+        if name == "wait":
+            command.add_argument("--timeout", type=float, default=60)
     args = parser.parse_args(argv)
     try:
         if args.verb == "profiles":
@@ -348,6 +382,18 @@ def main(argv: list[str] | None = None) -> int:
             from fm_tools.data_derive import derive as run_derive
 
             data = run_derive(args)
+        elif args.verb == "verify":
+            from fm_tools.data_handoff import verify as run_verify
+
+            data = run_verify(args)
+        elif args.verb == "split":
+            from fm_tools.data_split import split as run_split
+
+            data = run_split(args)
+        elif args.verb == "job":
+            from fm_tools import data_jobs
+
+            data = getattr(data_jobs, args.job_verb)(args)
         else:
             from fm_tools.data_review import approve, draft, validate
 
@@ -370,6 +416,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"schema_version": SCHEMA_VERSION, "verb": args.verb, "data": data}))
     else:
         print(json.dumps(data, indent=2))
+    if args.verb == "job" and args.job_verb == "wait":
+        if data["reason_code"] == "wait_timeout":
+            return 4
+        if data["state"] in {"failed", "cancelled", "interrupted"}:
+            return 3
     return 0
 
 

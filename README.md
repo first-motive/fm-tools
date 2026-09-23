@@ -553,6 +553,50 @@ and packages with the wheel; the verbs a repo exposes live in that repo's
 Still deferred: GitHub org auto-discovery, a `--stable` release channel, and an
 interactive `pick` menu over the verbs.
 
+### Robot data Phase 3 consumer check and local jobs
+
+`fm data-refine verify` rechecks the P0 source and P1 report, then opens every
+dataset row and required camera through the pinned FM Policy ACT or SmolVLA
+loader and preprocessor. It runs offline. Pass `--artifact-dir` only for a
+reviewed P2 derivative, together with its `--approval-file` and
+`--review-state-root`. The resulting handoff keeps consumer verification
+separate from training readiness. It stays blocked while physical semantics,
+raw lineage, grouped split membership, or train-only statistics are unproved.
+
+`fm data-refine split` takes a reviewed derivative plus a JSON plan that binds
+its source, report, and derivative digests. The plan assigns every output
+episode to `train`, `validation`, or `test` with a group ID and evidence. It
+rejects a group used in two splits. The installed LeRobot split writer creates
+separate datasets and aggregates each dataset's statistics from its own
+episodes. Tools verifies every output through the named Policy consumer. The
+split receipt records complete inventories and the train statistics digest.
+Pass `--split-dir` with the derivative and approval arguments to `verify` to
+check the training consumer against the separate train dataset. Related v1/v2
+source overlap and unresolved physical meaning still block readiness.
+
+```bash
+fm data-refine verify \
+  --source-root SOURCE --contract-dir P0_CONTRACT --report-dir P1_REPORT \
+  --consumer-project FM_POLICY --state-root P3_STATE --json
+```
+
+`fm data-refine job submit` accepts a local JSON request for the fixed `derive`
+operation. The request contains `schema_version: 1`, `operation: "derive"`, a
+unique `request_id`, and absolute paths under `parameters` for `source_root`,
+`contract_dir`, `report_dir`, `state_root`, `output_root`, `consumer_project`,
+and `approval_file`. The job store binds the ID to the request digest. An exact
+repeat returns the same state; changed content with that ID is refused.
+One worker writes media at a time. `status`, `wait`, and `cancel` use the request
+ID and `--job-root`. A new request ID retries interrupted work in a fresh
+derivative temporary directory. These commands do not approve reviews or train.
+
+```bash
+fm data-refine job submit --job-root JOBS --request-file REQUEST.json --json
+fm data-refine job status --job-root JOBS --request-id REQUEST_ID --json
+fm data-refine job wait --job-root JOBS --request-id REQUEST_ID --timeout 60 --json
+fm data-refine job cancel --job-root JOBS --request-id REQUEST_ID --json
+```
+
 ## Development
 
 ```bash

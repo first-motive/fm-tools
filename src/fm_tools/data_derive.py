@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -13,6 +16,20 @@ from pathlib import Path
 
 from fm_tools.data_refine import SCHEMA_VERSION, _canonical, _digest, _inventory
 from fm_tools.data_review import _inventory_preview, _preview_receipt, inputs, verify_approval
+
+
+@contextlib.contextmanager
+def _writer_lock():
+    # tradeoff: one lock per execution account; use a host service if several
+    # accounts must write to the same output root concurrently.
+    state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / "fm-tools"
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / "data-refine-writer.lock").open("a+b") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("busy worker: another media writer is active") from exc
+        yield
 
 
 def _project(path: Path, revision: str) -> Path:
@@ -37,10 +54,23 @@ def _run(project: Path, mode: str, request: dict) -> dict:
         request_file.write_bytes(_canonical(request))
         command = [uv, "run", "--no-sync", "--project", str(project), "python", "-m",
                    "fm_tools.data_derive", mode, str(request_file)]
-        result = subprocess.run(command, cwd=project, env=environment, text=True, capture_output=True, check=False)
-    if result.returncode:
-        raise ValueError(f"{mode} failed: {result.stderr.strip()[-1600:]}")
-    return json.loads(result.stdout)
+        process = subprocess.Popen(command, cwd=project, env=environment, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if request.get("cancel_file") and Path(request["cancel_file"]).exists():
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+                    raise ValueError("derivation cancelled")
+    if process.returncode:
+        raise ValueError(f"{mode} failed: {stderr.strip()[-1600:]}")
+    return json.loads(stdout)
 
 
 def _outside(source: Path, path: Path, *evidence: Path) -> Path:
@@ -92,6 +122,11 @@ def preview(args: argparse.Namespace) -> dict:
 
 
 def derive(args: argparse.Namespace) -> dict:
+    with _writer_lock():
+        return _derive_locked(args)
+
+
+def _derive_locked(args: argparse.Namespace) -> dict:
     source, manifest, report = inputs(args.source_root, args.contract_dir, args.report_dir)
     state = _outside(source, args.state_root, args.contract_dir, args.report_dir)
     output = _outside(source, args.output_root, args.contract_dir, args.report_dir)
