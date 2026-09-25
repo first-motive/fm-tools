@@ -215,6 +215,9 @@ def worker(path: Path) -> None:
         (path / "cancel").touch(exist_ok=True)
 
     signal.signal(signal.SIGTERM, stop)
+    # tradeoff: one writer per host serializes every media-writing job; the tower has
+    # one disk and one converter, so parallel jobs would only compete. Split the lock
+    # by operation if a host ever gains independent work queues.
     with (path.parent / ".writer.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (path / "cancel").exists():
