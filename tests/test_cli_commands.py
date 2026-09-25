@@ -731,3 +731,167 @@ def test_convert_refuses_a_config_outside_the_anvil_project(tmp_path, monkeypatc
                      "--repo-id", "first-motive/bag", "--output-root", str(tmp_path / "hf"),
                      "--exceptions-file", str(exceptions), "--json"]) == 3
         assert "inside the Anvil project" in json.loads(capsys.readouterr().out)["reason"]
+
+
+def _processing_host(tmp_path, monkeypatch):
+    """A machine card whose workspace holds one finalized Anvil session, as the tower's does."""
+    workspace = tmp_path / "fm"
+    session = workspace / "data" / "recordings" / "can"
+    _take(session, "0001")
+    _take(session, "0002", status="aborted")
+    (session / "metadata.json").write_text('{"version":1,"name":"can"}')
+    card = tmp_path / "machine.json"
+    card.write_text(json.dumps({"schema_version": 1, "name": "fm-ws-01", "role": "workstation",
+                                "fleet": "test", "transport": "zenoh", "workspace": str(workspace)}))
+    monkeypatch.setenv("FM_MACHINE_FILE", str(card))
+    return workspace
+
+
+def _remote(request, host="local"):
+    return main(["data-refine", "remote", "--host", host, "--request", json.dumps(request)])
+
+
+def test_remote_runs_transfer_as_a_durable_job_on_host_owned_roots(tmp_path, monkeypatch, capsys):
+    import time
+
+    workspace = _processing_host(tmp_path, monkeypatch)
+    assert _remote({"schema_version": 1, "operation": "capabilities"}) == 0
+    capabilities = json.loads(capsys.readouterr().out)
+    assert capabilities["data"]["host"] == "fm-ws-01" and "transfer" in capabilities["data"]["operations"]
+    assert _remote({"schema_version": 1, "operation": "shell", "parameters": {"cmd": "rm -rf /"}}) == 3
+    assert json.loads(capsys.readouterr().out)["reason_code"] == "unsupported_operation"
+    assert _remote({"schema_version": 1, "operation": "transfer", "request_id": "t1",
+                    "parameters": {"session": "can", "source_root": "/etc", "all_finalized": True}}) == 3
+    assert json.loads(capsys.readouterr().out)["reason_code"] == "invalid_request"
+
+    request = {"schema_version": 1, "operation": "transfer", "request_id": "t1",
+               "parameters": {"session": "can", "all_finalized": True}}
+    assert _remote(request) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "queued"
+    for _ in range(100):
+        assert _remote({"schema_version": 1, "operation": "job.status", "request_id": "t1"}) == 0
+        status = json.loads(capsys.readouterr().out)
+        if status["state"] not in {"queued", "running", "verifying"}:
+            break
+        time.sleep(0.1)
+    assert status["state"] == "completed", status
+    assert status["data"]["result"]["episodes"] == ["0001"]
+    assert Path(status["data"]["artifact"]).parent == workspace / "data/robot-data-processing/intake/can"
+    assert _remote(request) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["state"] == "completed"
+    request["parameters"]["episodes"], request["parameters"]["all_finalized"] = ["0001"], False
+    assert _remote(request) == 3
+    assert "different content" in json.loads(capsys.readouterr().out)["detail"]
+
+    assert _remote({"schema_version": 1, "operation": "sources"}) == 0
+    sources = json.loads(capsys.readouterr().out)["data"]
+    assert sources["recording_sessions"] == ["can"]
+    assert [(item["session"], item["episodes"], item["not_transferred"]) for item in sources["intakes"]] == [
+        ("can", 1, 1)]
+
+
+def test_remote_over_ssh_reports_transport_failure_and_serves_the_same_result(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import sys
+
+    from fm_tools import data_remote
+
+    _processing_host(tmp_path, monkeypatch)
+    real_run = subprocess.run
+
+    def loopback(command, *args, **kwargs):
+        assert command[:3] == ["ssh", "-o", "BatchMode=yes"] and command[-1] == "fm data-refine serve"
+        if command[-2] == "down-host":
+            return subprocess.CompletedProcess(command, 255, b"", b"ssh: connect to host down-host: timed out")
+        serve = [sys.executable, "-c", "from fm_tools.data_refine import main; raise SystemExit(main(['serve']))"]
+        return real_run(serve, *args, **kwargs)
+
+    monkeypatch.setattr(data_remote.subprocess, "run", loopback)
+    assert _remote({"schema_version": 1, "operation": "capabilities"}, host="fmtower-fm") == 0
+    assert json.loads(capsys.readouterr().out)["data"]["host"] == "fm-ws-01"
+    assert _remote({"schema_version": 1, "operation": "capabilities"}, host="down-host") == 1
+    failed = json.loads(capsys.readouterr().out)
+    assert (failed["state"], "timed out" in failed["detail"]) == ("transport_failed", True)
+    assert _remote({"schema_version": 1, "operation": "capabilities"}, host="bad host;x") == 2
+
+
+def test_capture_intent_keeps_human_outcome_apart_and_refuses_a_stale_edit(tmp_path, monkeypatch, capsys):
+    _processing_host(tmp_path, monkeypatch)
+    take = {"device": "fm-rob-01", "session_id": 9, "episode_id": 41, "episode_slug": "0012",
+            "origin": "quest", "task": "pick up the can and place it on the paper", "arm": "right",
+            "recorder_status": "success", "author": "Operator One", "expected_revision": 0}
+    assert _remote({"schema_version": 1, "operation": "intent.record", "parameters": take}) == 0
+    first = json.loads(capsys.readouterr().out)["data"]
+    seen = {key: take[key] for key in ("device", "session_id", "episode_id", "author")}
+    assert (first["revision"], first["outcome"], first["recorder_status"]) == (1, "unknown", "success")
+    assert _remote({"schema_version": 1, "operation": "intent.outcome", "parameters": {
+        **seen, "outcome": "failure", "note": "dropped the can", "expected_revision": 0}}) == 3
+    assert "stale intent" in json.loads(capsys.readouterr().out)["detail"]
+    assert _remote({"schema_version": 1, "operation": "intent.outcome", "parameters": {
+        **seen, "outcome": "failure", "note": "dropped the can", "expected_revision": 1}}) == 0
+    second = json.loads(capsys.readouterr().out)["data"]
+    assert (second["outcome"], second["recorder_status"], second["task"]) == (
+        "failure", "success", "pick up the can and place it on the paper")
+    assert _remote({"schema_version": 1, "operation": "intent.record", "parameters": {
+        **take, "episode_id": "41"}}) == 3
+    assert "positive numeric ID" in json.loads(capsys.readouterr().out)["detail"]
+    assert _remote({"schema_version": 1, "operation": "intent.list",
+                    "parameters": {"device": "fm-rob-01", "session_id": 9}}) == 0
+    assert [item["revision"] for item in json.loads(capsys.readouterr().out)["data"]] == [2]
+
+
+def test_scan_and_convert_run_as_durable_jobs_and_cancel_goes_through_remote(tmp_path, monkeypatch, capsys):
+
+    from fm_tools import data_convert, data_jobs
+
+    class Worker:
+        pid = __import__("os").getpid()
+
+    import subprocess
+
+    real_popen = subprocess.Popen
+    calls = []
+    scan_dir, project = _scanned(tmp_path, monkeypatch, capsys, calls)
+    anvil_run = data_convert.subprocess.run
+    monkeypatch.setattr(data_jobs.subprocess, "Popen", lambda *_args, **_kwargs: Worker())
+    jobs = tmp_path / "jobs"
+    base = {"state_root": str(tmp_path / "state"), "anvil_project": str(project)}
+    intake_dir = str(next((tmp_path / "intake" / "bag").glob("[0-9a-f]*")))
+    scan = {"schema_version": 1, "operation": "scan", "request_id": "scan-1",
+            "parameters": {"intake_dir": intake_dir, **base}}
+    assert data_jobs.submit_request(scan, jobs)["state"] == "queued"
+    data_jobs.worker(jobs / "scan-1")
+    finished = json.loads((jobs / "scan-1" / "status.json").read_text())
+    assert (finished["state"], finished["artifact"]) == ("completed", str(scan_dir))
+
+    exceptions = tmp_path / "exceptions.json"
+    exceptions.write_text(json.dumps({"schema_version": 1, "kind": "robot_recording_exceptions",
+                                      "scan_digest": scan_dir.name, "decisions": [
+                                          {"episode": "0002", "decision": "exclude", "reason": "x"},
+                                          {"episode": "0003", "decision": "exclude", "reason": "x"}]}))
+    convert = {"schema_version": 1, "operation": "convert", "request_id": "convert-1", "parameters": {
+        "scan_dir": str(scan_dir), **base, "config": "bimanual.yaml", "fps": 30, "task": "bag",
+        "repo_id": "first-motive/bag", "output_root": str(tmp_path / "hf"),
+        "exceptions_file": str(exceptions), "reviewer": None, "human_attestation": False}}
+    assert data_convert.subprocess.run is anvil_run
+    assert data_jobs.submit_request(convert, jobs)["state"] == "queued"
+    data_jobs.worker(jobs / "convert-1")
+    finished = json.loads((jobs / "convert-1" / "status.json").read_text())
+    assert finished["state"] == "completed"
+    assert json.loads((jobs / "convert-1" / "result.json").read_text())["episodes"] == 1
+
+    workspace = _processing_host(tmp_path / "host", monkeypatch)
+    running = real_popen(["sleep", "30"])
+    monkeypatch.setattr(data_jobs.subprocess, "Popen", lambda *_args, **_kwargs: running)
+    queued = {"schema_version": 1, "operation": "transfer", "request_id": "to-cancel",
+              "parameters": {"session": "can", "all_finalized": True}}
+    try:
+        assert _remote(queued) == 0
+        capsys.readouterr()
+        # Cancel asks the worker to stop; the job reports cancelled once its worker acknowledges.
+        assert _remote({"schema_version": 1, "operation": "job.cancel", "request_id": "to-cancel"}) == 0
+        assert json.loads(capsys.readouterr().out)["request_id"] == "to-cancel"
+        assert (workspace / "data/robot-data-processing/jobs/to-cancel/cancel").exists()
+        assert running.wait(timeout=5) != 0
+    finally:
+        running.kill()

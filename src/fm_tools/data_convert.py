@@ -224,6 +224,7 @@ def convert(args: argparse.Namespace) -> dict:
     if config.is_symlink() or not config.is_file() or not config.resolve().is_relative_to(project):
         raise ValueError("converter config must be a regular file inside the Anvil project, "
                          "so the recorded revision pins it")
+    config_sha256 = hashlib.sha256(config.read_bytes()).hexdigest()
     output_root = args.output_root.expanduser().resolve()
 
     work = scan_dir / "work" / record["session"]
@@ -274,11 +275,13 @@ def convert(args: argparse.Namespace) -> dict:
             raise ValueError(f"dataset-valid failed: {check.stderr.strip()[-800:]}")
         files = _inventory(dataset)
         load_intake(intake, state)
+        if hashlib.sha256(config.read_bytes()).hexdigest() != config_sha256:
+            raise ValueError("converter config changed during conversion")
         conversion = {
             "schema_version": SCHEMA_VERSION, "kind": "robot_recording_conversion",
             "repo_id": args.repo_id, "content_digest": _digest(files), "files": files,
             "scan_digest": digest, "intake_digest": record["intake_digest"],
-            "anvil": anvil, "config": {"path": str(config), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()},
+            "anvil": anvil, "config": {"path": str(config), "sha256": config_sha256},
             "arguments": [item if not item.startswith(str(temporary)) else "<output>/" + Path(item).name
                           for item in command],
             "fps": args.fps, "task": args.task, "include_flagged": include_flagged,

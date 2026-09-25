@@ -227,6 +227,46 @@ under its content digest with a receipt of the converter revision, worktree
 changes, config hash, arguments, exclusion map, and source map. The result
 stays `training_ready: false`; feed it to `contract` for the Phase 0–3 route.
 
+### Robot data Phase 5 remote contract and capture records
+
+`fm data-refine remote --host HOST --request JSON` sends one request to the
+processing host over SSH and prints one result. The host runs the fixed entry
+point `fm data-refine serve`, which reads that request on stdin. `--host local`
+runs the same handler in process. Desktop runs this same command, so the two
+surfaces never disagree.
+
+```bash
+fm data-refine remote --host fmtower-fm \
+  --request '{"schema_version":1,"operation":"sources"}'
+fm data-refine remote --host fmtower-fm --request \
+  '{"schema_version":1,"operation":"transfer","request_id":"can-0925",
+    "parameters":{"session":"pick-and-place-can","all_finalized":true}}'
+fm data-refine remote --host fmtower-fm \
+  --request '{"schema_version":1,"operation":"job.status","request_id":"can-0925"}'
+```
+
+Every operation is allowlisted and accepts only its own parameter names. A
+request names a session, digest, request ID, or configured source, never a
+path. The host derives every root from its machine card's `workspace`
+(`data/recordings`, `data/robot-data-processing/{intake,p4,p4-datasets,jobs,capture}`,
+and `anvil-embodied-ai`). A robot source is a named entry in the host-owned
+`data/robot-data-processing/sources.json`
+(`{"fm-rob-01": {"ssh_host": "...", "root": "/..."}}`).
+
+| Operations | Behavior |
+| --- | --- |
+| `capabilities`, `sources`, `inventory` | Read the host: its supported operations and tools, recording sessions, intakes, scans, and conversions. |
+| `transfer`, `scan`, `convert` | Submit a durable job bound to `request_id` and its payload digest. A replay returns the same job; changed content under the same ID refuses. A dropped connection does not cancel the job. `convert` takes its exceptions as inline content. |
+| `job.status`, `job.list`, `job.cancel` | Follow or cancel a job by request ID. A finished job carries its result; a failed one carries its reason. |
+| `intent.record`, `intent.outcome`, `intent.list` | Keep capture intent and human outcome for one take, keyed by device, recorder session ID, and episode ID. Each change is a new revision; `expected_revision` refuses a stale edit. The recorder's own status never becomes the human outcome. |
+
+The result is `{schema_version, kind, operation, request_id, state,
+reason_code, detail|data}`. Exit codes: `0` completed or accepted, `1`
+transport failure, `2` invalid usage, `3` refused or a failed, cancelled, or
+interrupted job. An `authorized_keys` entry with
+`command="fm data-refine serve",restrict` can pin a key to this entry point
+without changing the contract.
+
 Verbs that act, each by handing the work to a repo's own script:
 
 | Verb                        | Does                                                |
