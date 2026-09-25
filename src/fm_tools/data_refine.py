@@ -364,9 +364,47 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--request-id", required=True)
         if name == "wait":
             command.add_argument("--timeout", type=float, default=60)
+    for name, text in (("inventory", "list finalized and unfinished takes in one recording session"),
+                       ("transfer", "copy finalized takes with full hashes into a read-only intake")):
+        command = sub.add_parser(name, help=text)
+        command.add_argument("--source-root", type=Path, required=True)
+        command.add_argument("--session", required=True)
+        command.add_argument("--ssh-host")
+        command.add_argument("--episode", dest="episodes", action="append", default=[])
+        command.add_argument("--json", action="store_true")
+        if name == "transfer":
+            command.add_argument("--all-finalized", action="store_true")
+            command.add_argument("--intake-root", type=Path, required=True)
+            command.add_argument("--state-root", type=Path, required=True)
+    raw_scan = sub.add_parser("scan", help="run mcap-valid on an intake and classify its findings")
+    raw_scan.add_argument("--intake-dir", type=Path, required=True)
+    raw_scan.add_argument("--state-root", type=Path, required=True)
+    raw_scan.add_argument("--anvil-project", type=Path, required=True)
+    raw_scan.add_argument("--json", action="store_true")
+    conversion = sub.add_parser("convert", help="convert a scanned intake with an exact exclusion map")
+    conversion.add_argument("--scan-dir", type=Path, required=True)
+    conversion.add_argument("--state-root", type=Path, required=True)
+    conversion.add_argument("--anvil-project", type=Path, required=True)
+    conversion.add_argument("--config", type=Path, required=True)
+    conversion.add_argument("--fps", type=int, required=True)
+    conversion.add_argument("--task", required=True)
+    conversion.add_argument("--repo-id", required=True)
+    conversion.add_argument("--output-root", type=Path, required=True)
+    conversion.add_argument("--exceptions-file", type=Path)
+    conversion.add_argument("--reviewer")
+    conversion.add_argument("--human-attestation", action="store_true")
+    conversion.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if args.verb == "profiles":
+        if args.verb in {"inventory", "transfer"}:
+            from fm_tools import data_intake
+
+            data = getattr(data_intake, args.verb)(args)
+        elif args.verb in {"scan", "convert"}:
+            from fm_tools import data_convert
+
+            data = getattr(data_convert, args.verb)(args)
+        elif args.verb == "profiles":
             data = {key: {**value, "digest": _digest(value)} for key, value in PROFILES.items()}
         elif args.verb == "contract":
             data = _contract(args)

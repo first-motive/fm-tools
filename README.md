@@ -182,6 +182,51 @@ promoted. A `--cancel-file` stops work before promotion. Repeat input reuses
 the verified result. The derivative remains `training_ready: false` until the
 Phase 3 consumer and split checks pass.
 
+### Robot data Phase 4 intake, scan, and conversion
+
+`fm data-refine inventory` lists one Anvil recording session. A take is
+finalized when its `metadata.json` status is `success` or `failure` and every
+MCAP file ends with the footer a writer adds only on close. `in_progress`,
+`aborted`, and open takes are listed with a reason and never copied.
+With `--ssh-host`, the stdlib-only probe travels to the recording host on
+stdin; that host needs `python3` and SSH key access, not an `fm` install.
+
+```bash
+fm data-refine transfer --ssh-host ROBOT --source-root RECORDINGS_ROOT \
+  --session pick-and-place-can --episode 0001 --episode 0002 \
+  --intake-root /opt/fm/data/robot-data-processing/intake \
+  --state-root /opt/fm/data/robot-data-processing/p4 --json
+```
+
+`transfer` hashes the named finalized takes on the source, copies them with
+`rsync --partial` into a private staging directory, and checks every copied
+byte with SHA-256. An interrupted copy resumes when you rerun the same
+command. A source file that changes during the copy discards the staging copy.
+Only a verified copy is promoted, read-only, under its inventory digest; the
+receipt lands in the state root. The command never deletes or writes on the
+source. `--all-finalized` takes every finalized take and records the rest.
+
+`fm data-refine scan --intake-dir INTAKE --state-root STATE --anvil-project
+ANVIL` runs `mcap-valid` on read-only links in tools state, so the vendor
+report never lands in the intake. It classifies each critical finding from
+the report's structured fields: an absent arm command topic needs a human
+exception; a stream gap, a missing stream, or a read error is blocked; any
+other critical finding is on hold. The scan also writes an
+`exceptions-template.json` with a `hold` for each episode that needs a decision.
+
+`fm data-refine convert` refuses until every critical episode is excluded or
+holds an exception that names the arm, intended task, inactive-arm behavior,
+evidence, and reason. A blocked or held episode cannot be admitted. An exception
+needs `--reviewer` and `--human-attestation` from a person; an agent must not
+supply them. The command maps every MCAP file to the converter's 1-based
+position and passes an explicit `--skip-episode-idx` list. It lifts
+`--include-flagged` to `critical` only when a recorded exception admits a
+critical episode. It refuses a dataset whose episode count differs from the
+admitted files, runs `dataset-valid` as a smoke test, and promotes the output
+under its content digest with a receipt of the converter revision, worktree
+changes, config hash, arguments, exclusion map, and source map. The result
+stays `training_ready: false`; feed it to `contract` for the Phase 0–3 route.
+
 Verbs that act, each by handing the work to a repo's own script:
 
 | Verb                        | Does                                                |

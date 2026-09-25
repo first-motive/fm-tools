@@ -489,3 +489,245 @@ def test_phase3_media_writer_refuses_a_second_writer(tmp_path, monkeypatch):
             assert "busy worker" in str(exc)
         else:
             assert False, "a second media writer must not start"
+
+
+MCAP_MAGIC = b"\x89MCAP0\r\n"
+
+
+def _take(session, name, status="success", closed=True, payload=b"frames"):
+    take = session / name
+    take.mkdir(parents=True)
+    (take / f"{name}_0.mcap").write_bytes(MCAP_MAGIC + payload + (MCAP_MAGIC if closed else b""))
+    (take / "metadata.json").write_text(json.dumps({"version": 1, "status": status, "note": "", "duration": 3}))
+    return take
+
+
+def _transfer(tmp_path, *selection):
+    return main([
+        "data-refine", "transfer", "--source-root", str(tmp_path / "robot"), "--session", "can",
+        "--intake-root", str(tmp_path / "intake"), "--state-root", str(tmp_path / "state"),
+        *selection, "--json",
+    ])
+
+
+def test_transfer_copies_only_finalized_takes_and_resumes_an_interrupted_copy(tmp_path, capsys):
+    session = tmp_path / "robot" / "can"
+    _take(session, "0001")
+    _take(session, "0002", payload=b"second take frames")
+    _take(session, "0003", status="in_progress")
+    _take(session, "0004", closed=False)
+    (session / "metadata.json").write_text('{"version":1,"name":"can"}')
+
+    assert _transfer(tmp_path, "--episode", "0003") == 3
+    assert "0003 (status_in_progress)" in json.loads(capsys.readouterr().out)["reason"]
+
+    assert main(["data-refine", "inventory", "--source-root", str(tmp_path / "robot"),
+                 "--session", "can", "--json"]) == 0
+    listing = json.loads(capsys.readouterr().out)["data"]
+    assert listing["finalized"] == ["0001", "0002"]
+    assert {item["reason"] for item in listing["not_finalized"]} == {"status_in_progress", "mcap_not_closed"}
+
+    from fm_tools.data_intake import probe
+    from fm_tools.data_refine import _digest
+    frozen = probe(None, str(tmp_path / "robot"), "can", ["0001", "0002"], True)
+    files = [{key: item[key] for key in ("path", "bytes", "sha256")}
+             for item in [*frozen["session_files"], *(f for e in frozen["episodes"] for f in e["files"])]]
+    digest = _digest({"schema_version": 1, "kind": "robot_recording_intake", "session": "can", "files": files})
+    # An interrupted copy leaves a truncated file in staging; the rerun must finish it, not trust it.
+    partial = tmp_path / "intake" / "can" / f".partial-{digest}" / "0002"
+    partial.mkdir(parents=True)
+    (partial / "0002_0.mcap").write_bytes(MCAP_MAGIC + b"sec")
+
+    assert _transfer(tmp_path, "--all-finalized") == 0
+    result = json.loads(capsys.readouterr().out)["data"]
+    assert (result["status"], result["intake_digest"], result["episodes"]) == ("completed", digest, ["0001", "0002"])
+    intake = Path(result["intake_dir"])
+    assert (intake / "0002" / "0002_0.mcap").read_bytes() == (session / "0002" / "0002_0.mcap").read_bytes()
+    assert not (intake / "0003").exists() and not (intake / "0004").exists()
+    assert (intake / "0001" / "0001_0.mcap").stat().st_mode & 0o222 == 0
+    receipt = json.loads(Path(result["receipt"]).read_text())
+    assert [item["episode"] for item in receipt["not_transferred"]] == ["0003", "0004"]
+
+    assert _transfer(tmp_path, "--all-finalized") == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "reused"
+
+
+def test_transfer_discards_the_copy_when_the_source_changes_mid_copy(tmp_path, monkeypatch, capsys):
+    from fm_tools import data_intake
+
+    session = tmp_path / "robot" / "can"
+    take = _take(session, "0001")
+    real_run = data_intake.subprocess.run
+
+    def rsync_then_edit(command, *args, **kwargs):
+        result = real_run(command, *args, **kwargs)
+        if command[0] == "rsync":
+            (take / "metadata.json").write_text('{"version":1,"status":"failure","note":"edited","duration":3}')
+        return result
+
+    monkeypatch.setattr(data_intake.subprocess, "run", rsync_then_edit)
+    assert _transfer(tmp_path, "--episode", "0001") == 3
+    assert "changed source" in json.loads(capsys.readouterr().out)["reason"]
+    assert [path.name for path in (tmp_path / "intake" / "can").iterdir() if path.is_dir()] == []
+    assert not (tmp_path / "state").exists()
+
+
+def _scanned(tmp_path, monkeypatch, capsys, calls):
+    """Transfer three takes, then scan them with a stand-in for the Anvil CLIs."""
+    from subprocess import CompletedProcess
+
+    from fm_tools import data_convert
+
+    session = tmp_path / "robot" / "bag"
+    for name in ("0001", "0002", "0003"):
+        _take(session, name, payload=name.encode())
+    assert main(["data-refine", "transfer", "--source-root", str(tmp_path / "robot"), "--session", "bag",
+                 "--intake-root", str(tmp_path / "intake"), "--state-root", str(tmp_path / "state"),
+                 "--all-finalized", "--json"]) == 0
+    intake = json.loads(capsys.readouterr().out)["data"]["intake_dir"]
+    project = tmp_path / "anvil"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='anvil'\n")
+    (project / "bimanual.yaml").write_text("fps: 30\n")
+    absent_right = {"topic": "/follower_r_forward_position_controller/commands", "role": "action",
+                    "message_count": 0, "message_type": None, "gaps": [], "severity": "critical"}
+    stream_gap = {"topic": "/cam_chest/image_raw/compressed", "role": "stream", "message_count": 730,
+                  "message_type": "sensor_msgs/CompressedImage", "severity": "critical",
+                  "gaps": [{"start_s": 12.1, "end_s": 13.1, "duration_s": 0.95, "kind": "trailing"}]}
+    findings = {"0001": ("warning", []), "0002": ("critical", [absent_right]), "0003": ("critical", [stream_gap])}
+
+    def anvil(command, *args, **kwargs):
+        calls.append(command)
+        if command[:2] == ["git", "-C"]:
+            return CompletedProcess(command, 0, "abc123\n" if "rev-parse" in command else "", "")
+        verb = command[command.index("--project") + 2]
+        if verb == "mcap-valid":
+            work = Path(command[command.index("-i") + 1])
+            (work / "mcap_valid_reports").mkdir()
+            (work / "mcap_valid_reports" / "report.json").write_text(json.dumps({"episodes": [
+                {"path": str(path.resolve()), "severity": findings[path.parent.name][0],
+                 "topics": findings[path.parent.name][1], "read_error": None}
+                for path in sorted(work.glob("*/*.mcap"))]}))
+        elif verb == "mcap-convert":
+            dataset = Path(command[command.index("--output-path") + 1])
+            skipped = command[command.index("--skip-episode-idx") + 1].split(",")
+            (dataset / "meta").mkdir(parents=True)
+            (dataset / "meta" / "info.json").write_text(json.dumps(
+                {"codebase_version": "v3.0", "total_episodes": 3 - len(skipped)}))
+            (dataset / "debug_plots").mkdir()
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(data_convert.subprocess, "run", anvil)
+    assert main(["data-refine", "scan", "--intake-dir", intake, "--state-root", str(tmp_path / "state"),
+                 "--anvil-project", str(project), "--json"]) == 0
+    scanned = json.loads(capsys.readouterr().out)["data"]
+    assert scanned["counts"] == {"admitted": 1, "exception_required": 1, "hold": 0, "blocked": 1}
+    return Path(scanned["scan_dir"]), project
+
+
+def _convert(tmp_path, scan_dir, project, decisions, *extra):
+    exceptions = tmp_path / "exceptions.json"
+    exceptions.write_text(json.dumps({"schema_version": 1, "kind": "robot_recording_exceptions",
+                                      "scan_digest": scan_dir.name, "decisions": decisions}))
+    return main(["data-refine", "convert", "--scan-dir", str(scan_dir), "--state-root", str(tmp_path / "state"),
+                 "--anvil-project", str(project), "--config", "bimanual.yaml", "--fps", "30",
+                 "--task", "bag the checkers", "--repo-id", "first-motive/bag", "--output-root",
+                 str(tmp_path / "hf"), "--exceptions-file", str(exceptions), *extra, "--json"])
+
+
+def test_convert_never_lets_an_action_exception_admit_a_stream_gap(tmp_path, monkeypatch, capsys):
+    calls = []
+    scan_dir, project = _scanned(tmp_path, monkeypatch, capsys, calls)
+    exception = {"episode": "0002", "decision": "include", "reason": "right arm idle by design",
+                 "arm": "right", "intended_task": "left-arm bagging", "inactive_arm_behavior": "held still",
+                 "evidence": "operator run note"}
+
+    assert _convert(tmp_path, scan_dir, project, [exception]) == 3
+    assert "0003 is blocked" in json.loads(capsys.readouterr().out)["reason"]
+    assert _convert(tmp_path, scan_dir, project, [
+        exception, {**exception, "episode": "0003", "reason": "try to keep the gap"}]) == 3
+    assert "0003 is blocked and cannot be admitted" in json.loads(capsys.readouterr().out)["reason"]
+    gap_out = {"episode": "0003", "decision": "exclude", "reason": "stream gap"}
+    assert _convert(tmp_path, scan_dir, project, [exception, gap_out]) == 3
+    assert "--human-attestation" in json.loads(capsys.readouterr().out)["reason"]
+    assert not any("mcap-convert" in command for command in calls)
+
+    assert _convert(tmp_path, scan_dir, project, [exception, gap_out],
+                    "--reviewer", "Test Reviewer", "--human-attestation") == 0
+    result = json.loads(capsys.readouterr().out)["data"]
+    convert_call = next(command for command in calls if "mcap-convert" in command)
+    assert convert_call[convert_call.index("--skip-episode-idx") + 1] == "3"
+    assert convert_call[convert_call.index("--include-flagged") + 1] == "critical"
+    receipt = json.loads((Path(result["conversion_dir"]) / "conversion.json").read_text())
+    assert [item["episode"] for item in receipt["source_map"]] == ["0001", "0002"]
+    assert receipt["reviewer"] == "Test Reviewer" and receipt["training_ready"] is False
+    assert not (Path(result["dataset"]) / "debug_plots").exists()
+
+
+def test_convert_keeps_the_severity_threshold_when_every_critical_is_excluded(tmp_path, monkeypatch, capsys):
+    calls = []
+    scan_dir, project = _scanned(tmp_path, monkeypatch, capsys, calls)
+    assert _convert(tmp_path, scan_dir, project, [
+        {"episode": "0002", "decision": "exclude", "reason": "no reviewed exception yet"},
+        {"episode": "0003", "decision": "exclude", "reason": "stream gap"},
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)["data"]
+    convert_call = next(command for command in calls if "mcap-convert" in command)
+    assert convert_call[convert_call.index("--include-flagged") + 1] == "warning"
+    assert convert_call[convert_call.index("--skip-episode-idx") + 1] == "2,3"
+    assert (result["episodes"], result["excluded"]) == (1, ["0002", "0003"])
+
+
+def test_transfer_over_ssh_runs_the_quoted_probe_and_copies_from_the_host(tmp_path, monkeypatch, capsys):
+    import shlex
+    import subprocess
+    import sys
+
+    from fm_tools import data_intake
+
+    _take(tmp_path / "robot" / "can", "0001")
+    real_run = subprocess.run
+    seen = []
+
+    def loopback(command, *args, **kwargs):
+        # Stand in for the network hop only: the remote command string runs in a local shell.
+        if command[0] == "ssh":
+            seen.append(command)
+            assert command[-2] == "robot-1"
+            return real_run(["sh", "-c", command[-1].replace("python3", shlex.quote(sys.executable), 1)],
+                            *args, **kwargs)
+        if command[0] == "rsync":
+            shell = command[command.index("-e") + 1]
+            assert shell.startswith("ssh -o BatchMode=yes")
+            command = [part for part in command if part not in {"-e", shell}]
+            command = [part.removeprefix("robot-1:") for part in command]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(data_intake.subprocess, "run", loopback)
+    assert main(["data-refine", "transfer", "--ssh-host", "robot-1", "--source-root", str(tmp_path / "robot"),
+                 "--session", "can", "--episode", "0001", "--intake-root", str(tmp_path / "intake"),
+                 "--state-root", str(tmp_path / "state"), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)["data"]
+    assert result["status"] == "completed" and len(seen) == 2
+    receipt = json.loads(Path(result["receipt"]).read_text())
+    assert receipt["source"]["ssh_host"] == "robot-1"
+    assert main(["data-refine", "transfer", "--ssh-host", "robot;rm -rf /", "--source-root", "/r",
+                 "--session", "can", "--all-finalized", "--intake-root", str(tmp_path / "i2"),
+                 "--state-root", str(tmp_path / "s2"), "--json"]) == 3
+    assert "SSH host" in json.loads(capsys.readouterr().out)["reason"]
+
+
+def test_convert_refuses_a_config_outside_the_anvil_project(tmp_path, monkeypatch, capsys):
+    scan_dir, project = _scanned(tmp_path, monkeypatch, capsys, [])
+    (tmp_path / "outside.yaml").write_text("fps: 30\n")
+    decisions = [{"episode": "0002", "decision": "exclude", "reason": "x"},
+                 {"episode": "0003", "decision": "exclude", "reason": "x"}]
+    exceptions = tmp_path / "exceptions.json"
+    exceptions.write_text(json.dumps({"schema_version": 1, "kind": "robot_recording_exceptions",
+                                      "scan_digest": scan_dir.name, "decisions": decisions}))
+    for config in ("../outside.yaml", str(tmp_path / "outside.yaml")):
+        assert main(["data-refine", "convert", "--scan-dir", str(scan_dir), "--state-root", str(tmp_path / "state"),
+                     "--anvil-project", str(project), "--config", config, "--fps", "30", "--task", "t",
+                     "--repo-id", "first-motive/bag", "--output-root", str(tmp_path / "hf"),
+                     "--exceptions-file", str(exceptions), "--json"]) == 3
+        assert "inside the Anvil project" in json.loads(capsys.readouterr().out)["reason"]
