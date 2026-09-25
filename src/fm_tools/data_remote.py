@@ -126,7 +126,12 @@ def _sources(paths: dict[str, Path]) -> dict:
         scans.append({"session": scan["session"], "intake_digest": scan["intake_digest"],
                       "scan_digest": scan_path.parent.name, "counts": scan["counts"],
                       "needs_decision": [item["episode"] for item in scan["episodes"]
-                                         if item["admission"] != "admitted"]})
+                                         if item["admission"] != "admitted"],
+                      "flagged": [{"episode": item["episode"], "admission": item["admission"],
+                                   "findings": [{"class": finding["class"], "arm": finding.get("arm"),
+                                                 "topic": finding.get("topic")}
+                                                for finding in item["findings"]]}
+                                  for item in scan["episodes"] if item["admission"] != "admitted"]})
     conversions = []
     for conversion_path in _receipts("*/*/conversion.json", paths["datasets"]):
         conversion = json.loads(conversion_path.read_text())
