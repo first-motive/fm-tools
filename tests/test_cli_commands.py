@@ -676,3 +676,58 @@ def test_convert_keeps_the_severity_threshold_when_every_critical_is_excluded(tm
     assert convert_call[convert_call.index("--include-flagged") + 1] == "warning"
     assert convert_call[convert_call.index("--skip-episode-idx") + 1] == "2,3"
     assert (result["episodes"], result["excluded"]) == (1, ["0002", "0003"])
+
+
+def test_transfer_over_ssh_runs_the_quoted_probe_and_copies_from_the_host(tmp_path, monkeypatch, capsys):
+    import shlex
+    import subprocess
+    import sys
+
+    from fm_tools import data_intake
+
+    _take(tmp_path / "robot" / "can", "0001")
+    real_run = subprocess.run
+    seen = []
+
+    def loopback(command, *args, **kwargs):
+        # Stand in for the network hop only: the remote command string runs in a local shell.
+        if command[0] == "ssh":
+            seen.append(command)
+            assert command[-2] == "robot-1"
+            return real_run(["sh", "-c", command[-1].replace("python3", shlex.quote(sys.executable), 1)],
+                            *args, **kwargs)
+        if command[0] == "rsync":
+            shell = command[command.index("-e") + 1]
+            assert shell.startswith("ssh -o BatchMode=yes")
+            command = [part for part in command if part not in {"-e", shell}]
+            command = [part.removeprefix("robot-1:") for part in command]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(data_intake.subprocess, "run", loopback)
+    assert main(["data-refine", "transfer", "--ssh-host", "robot-1", "--source-root", str(tmp_path / "robot"),
+                 "--session", "can", "--episode", "0001", "--intake-root", str(tmp_path / "intake"),
+                 "--state-root", str(tmp_path / "state"), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)["data"]
+    assert result["status"] == "completed" and len(seen) == 2
+    receipt = json.loads(Path(result["receipt"]).read_text())
+    assert receipt["source"]["ssh_host"] == "robot-1"
+    assert main(["data-refine", "transfer", "--ssh-host", "robot;rm -rf /", "--source-root", "/r",
+                 "--session", "can", "--all-finalized", "--intake-root", str(tmp_path / "i2"),
+                 "--state-root", str(tmp_path / "s2"), "--json"]) == 3
+    assert "SSH host" in json.loads(capsys.readouterr().out)["reason"]
+
+
+def test_convert_refuses_a_config_outside_the_anvil_project(tmp_path, monkeypatch, capsys):
+    scan_dir, project = _scanned(tmp_path, monkeypatch, capsys, [])
+    (tmp_path / "outside.yaml").write_text("fps: 30\n")
+    decisions = [{"episode": "0002", "decision": "exclude", "reason": "x"},
+                 {"episode": "0003", "decision": "exclude", "reason": "x"}]
+    exceptions = tmp_path / "exceptions.json"
+    exceptions.write_text(json.dumps({"schema_version": 1, "kind": "robot_recording_exceptions",
+                                      "scan_digest": scan_dir.name, "decisions": decisions}))
+    for config in ("../outside.yaml", str(tmp_path / "outside.yaml")):
+        assert main(["data-refine", "convert", "--scan-dir", str(scan_dir), "--state-root", str(tmp_path / "state"),
+                     "--anvil-project", str(project), "--config", config, "--fps", "30", "--task", "t",
+                     "--repo-id", "first-motive/bag", "--output-root", str(tmp_path / "hf"),
+                     "--exceptions-file", str(exceptions), "--json"]) == 3
+        assert "inside the Anvil project" in json.loads(capsys.readouterr().out)["reason"]

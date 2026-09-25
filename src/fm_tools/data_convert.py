@@ -220,9 +220,10 @@ def convert(args: argparse.Namespace) -> dict:
     project, runner, anvil = _anvil(args.anvil_project.expanduser())
     if anvil != record["anvil"]:
         raise ValueError("Anvil revision or worktree differs from the scan")
-    config = (project / args.config) if not args.config.is_absolute() else args.config
-    if config.is_symlink() or not config.is_file():
-        raise ValueError("converter config is missing or is a symlink")
+    config = project / args.config
+    if config.is_symlink() or not config.is_file() or not config.resolve().is_relative_to(project):
+        raise ValueError("converter config must be a regular file inside the Anvil project, "
+                         "so the recorded revision pins it")
     output_root = args.output_root.expanduser().resolve()
 
     work = scan_dir / "work" / record["session"]
