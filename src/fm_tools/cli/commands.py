@@ -93,7 +93,7 @@ FORWARDING_USAGE: dict[str, str] = {
     "device": "device list|ssh|tunnel [args...]",
     "diagram": "diagram list|render|check|watch",
     "run": "run -- <command> [args...]",
-    "data-refine": "data-refine inventory|transfer|scan|convert|profiles|contract|assess|preview|review|derive|verify|split|job [args...]",
+    "data-refine": "data-refine remote|serve|inventory|transfer|scan|convert|profiles|contract|assess|preview|review|derive|verify|split|job [args...]",
 }
 
 
