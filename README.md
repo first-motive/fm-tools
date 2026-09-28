@@ -79,7 +79,7 @@ keeps working.
 
 ### Robot data Phase 0 contract
 
-`fm data-refine profiles --json` shows the versioned ACT and SmolVLA
+`fm data-refine profiles --json` shows the versioned ACT, SmolVLA, and π0.5
 requirements and their digests. `fm data-refine contract` freezes one existing
 LeRobot v3 dataset and checks sample frames through the installed FM Policy
 consumer. It does not change the dataset or approve it for training.
@@ -107,6 +107,51 @@ and unknown semantics. Both files have `schema_version: 1`. A repeat run reuses
 the directory only when both files match. Any source change or conflicting
 destination is refused. `training_ready: false` remains explicit until later
 assessment and human review resolve the missing evidence.
+
+### Check π0.5 Compatibility
+
+`pi05-canpick-v1` uses the installed LeRobot `PI05Config`, quantile
+normalization, and the PaliGemma tokenizer. State and action need finite,
+ordered `q01` and `q99` values for every dimension (1–32). The consumer host
+must already have the tokenizer cache and the LeRobot `pi` extra. The check
+runs offline and does not download weights, accept a licence, or start training.
+
+```bash
+fm data-refine check --source-root /path/to/dataset \
+  --consumer-project /path/to/fm-policy --repo-id first-motive/can \
+  --profile pi05-canpick-v1 --json
+```
+
+The result binds the source inventory digest and profile digest. `compatible`
+means that up to nine frames (start, middle, end in up to three episodes)
+passed the installed loader and preprocessor. `blocked` carries the reason.
+Neither result approves training. The check reads every source file to verify
+its identity before and after the sample check; allow time for large datasets.
+
+Desktop uses the same check through the host's `compatibility` operation.
+The request names a conversion's `repo_id`, `content_digest`, and `profile`;
+all paths come from the host. Older hosts do not advertise this operation.
+
+For the governed review and handoff path, select `--profile pi05-canpick-v1`
+on `contract`, then use the existing `assess`, human review, `derive`, `split`,
+and `verify` commands. Use a separate contract state root when a different
+consumer proof already occupies the source identity. Omitting `--profile`
+keeps the existing ACT and SmolVLA contract checks and profile digests.
+π0.5 splits recompute vector statistics from each split's own rows; held-out
+rows never contribute to the train statistics. Full handoff verification still
+checks every row and required camera and retains all human evidence gates.
+
+Installed-runtime regression proof (synthetic data, no training):
+
+```bash
+FM_PI05_TEST_PROJECT=/path/to/fm-policy uv run pytest \
+  tests/test_cli_commands.py -k pi05_installed \
+  --basetemp=/tmp/fm-pi05-proof --junitxml=/tmp/fm-pi05-proof.xml
+```
+
+The test saves `pi05-evidence.json` under its test directory. Without a cached
+tokenizer it proves the blocked path; with the cache it also proves sample
+preprocessing. It always checks missing quantiles and train-only split statistics.
 
 ### Robot data Phase 1 report
 

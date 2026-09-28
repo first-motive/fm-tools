@@ -108,7 +108,8 @@ def _split_locked(args: argparse.Namespace) -> dict:
     temporary = Path(tempfile.mkdtemp(prefix=".split-", dir=destination.parent))
     try:
         result = _run(project, {"dataset": str(artifact / "dataset"), "repo_id": receipt["repo_id"],
-                                "splits": assignments, "output": str(temporary / "datasets")})
+                                "splits": assignments, "output": str(temporary / "datasets"),
+                                "profile_id": report["profile_id"]})
         verified = {}
         for name, entry in result.items():
             dataset = temporary / "datasets" / name
@@ -136,11 +137,14 @@ def _split_locked(args: argparse.Namespace) -> dict:
 def _internal_split(request: dict) -> dict:
     import fm_policy  # noqa: F401
     from lerobot.datasets import LeRobotDataset
-    from lerobot.datasets.dataset_tools import split_dataset
+    from lerobot.datasets.dataset_tools import split_dataset, recompute_stats
 
     dataset = LeRobotDataset(request["repo_id"], root=request["dataset"], video_backend="pyav")
     result = split_dataset(dataset, request["splits"], output_dir=request["output"])
     for name in result:
+        if request.get("profile_id") == "pi05-canpick-v1":
+            # Recompute only this split: inherited full-source quantiles are not train-only evidence.
+            recompute_stats(result[name], skip_image_video=True)
         stats = Path(request["output"]) / name / "meta" / "stats.json"
         stats.write_bytes(_canonical(json.loads(stats.read_text())) + b"\n")
     return {name: {"repo_id": output.repo_id, "episodes": output.meta.total_episodes,

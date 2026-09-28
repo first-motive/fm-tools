@@ -31,6 +31,7 @@ SSH_TARGET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}")
 PARAMETERS = {
     "capabilities": set(), "sources": set(), "job.status": set(), "job.list": set(), "job.cancel": set(),
     "inventory": {"source", "session"},
+    "compatibility": {"repo_id", "content_digest", "profile"},
     "transfer": {"source", "session", "episodes", "all_finalized"},
     "scan": {"session", "intake_digest"},
     "convert": {"session", "intake_digest", "scan_digest", "config", "fps", "task", "repo_id", "exceptions",
@@ -59,7 +60,7 @@ def roots(workspace: Path) -> dict[str, Path]:
     return {"recordings": data / "recordings", "intake": base / "intake", "state": base / "p4",
             "datasets": base / "p4-datasets", "capture": base / "capture", "jobs": base / "jobs",
             "exceptions": base / "exceptions", "sources": base / "sources.json",
-            "anvil": workspace / "anvil-embodied-ai"}
+            "anvil": workspace / "anvil-embodied-ai", "policy": workspace / "fm-policy"}
 
 
 def _host_roots() -> tuple[str, dict[str, Path]]:
@@ -144,6 +145,29 @@ def _sources(paths: dict[str, Path]) -> dict:
             "intakes": intakes, "scans": scans, "conversions": conversions}
 
 
+def _compatibility(parameters: dict, paths: dict[str, Path]) -> dict:
+    from fm_tools.data_refine import PROFILES, check
+
+    repo_id = parameters.get("repo_id")
+    if not isinstance(repo_id, str) or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*", repo_id):
+        raise Refused("invalid_request", "repo_id must be OWNER/NAME")
+    profile = parameters.get("profile")
+    if not isinstance(profile, str) or profile not in PROFILES:
+        raise Refused("invalid_request", "unknown policy profile")
+    digest = _digest_param(parameters, "content_digest")
+    artifact = paths["datasets"] / repo_id.replace("/", "_") / digest
+    if artifact.resolve() != paths["datasets"].resolve() / repo_id.replace("/", "_") / digest:
+        raise Refused("invalid_request", "conversion path is unsafe")
+    receipt_path = artifact / "conversion.json"
+    if receipt_path.is_symlink():
+        raise Refused("invalid_request", "conversion receipt is unsafe")
+    receipt = json.loads(receipt_path.read_text())
+    if receipt.get("repo_id") != repo_id or receipt.get("content_digest") != digest:
+        raise Refused("invalid_request", "conversion identity differs from request")
+    return check(argparse.Namespace(source_root=artifact / "dataset", consumer_project=paths["policy"],
+                                    repo_id=repo_id, profile=profile, expected_digest=digest))
+
+
 def _job_request(operation: str, request_id: object, parameters: dict, paths: dict[str, Path]) -> dict:
     if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
         raise Refused("invalid_request", "a job needs a request_id")
@@ -215,6 +239,8 @@ def handle(request: object) -> dict:
                     "rsync": bool(shutil.which("rsync"))}
         elif operation == "sources":
             data = _sources(paths)
+        elif operation == "compatibility":
+            data = _compatibility(parameters, paths)
         elif operation == "inventory":
             from fm_tools.data_intake import inventory
 
