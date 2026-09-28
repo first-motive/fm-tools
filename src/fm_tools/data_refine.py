@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import shutil
@@ -34,6 +35,16 @@ PROFILES = {
         "policy": "act",
         "language_required": False,
         "task_scope": "one declared task per handoff",
+        "required_evidence": ["camera_mapping", "state_action_units", "action_origin", "task_outcome"],
+    },
+    "pi05-canpick-v1": {
+        "schema_version": 1,
+        "policy": "pi05",
+        "language_required": True,
+        "task_scope": "declared instructions",
+        "normalization": "quantiles",
+        "required_statistics": ["q01", "q99"],
+        "tokenizer": "google/paligemma-3b-pt-224",
         "required_evidence": ["camera_mapping", "state_action_units", "action_origin", "task_outcome"],
     },
 }
@@ -81,21 +92,98 @@ def _sample(value: str) -> tuple[int, str]:
     return int(match[1]), match[2]
 
 
-def _probe(source: Path, repo_id: str, samples: list[tuple[int, str]]) -> dict:
+def _pi05_statistics(features: dict, stats: dict) -> dict[str, int]:
+    dimensions = {}
+    for key in ("observation.state", "action"):
+        shape = features.get(key, {}).get("shape", [])
+        if len(shape) != 1 or type(shape[0]) is not int or not 1 <= shape[0] <= 32:
+            raise ValueError(f"pi05 {key} must have 1 to 32 dimensions")
+        dimensions[key] = shape[0]
+        values = stats.get(key, {})
+        low, high = values.get("q01"), values.get("q99")
+        if (low is None or high is None or len(low) != shape[0] or len(high) != shape[0]
+                or not all(math.isfinite(float(a)) and math.isfinite(float(b)) and a <= b
+                           for a, b in zip(low, high))):
+            raise ValueError(f"pi05 {key} needs finite, ordered q01 and q99 statistics for every dimension")
+    return dimensions
+
+
+def _consumer_config(profile: dict, meta):
+    from lerobot.configs import FeatureType
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+    from lerobot.utils.feature_utils import dataset_to_policy_features
+
+    config_types = {"act": ACTConfig, "smolvla": SmolVLAConfig}
+    if profile["policy"] == "pi05":
+        from lerobot.policies.pi05.configuration_pi05 import PI05Config
+
+        _pi05_statistics(meta.features, meta.stats)
+        if not any(value["dtype"] in {"image", "video"} for value in meta.features.values()):
+            raise ValueError("pi05 requires at least one camera")
+        config_types["pi05"] = PI05Config
+    features = dataset_to_policy_features(meta.features)
+    config = config_types[profile["policy"]](
+        input_features={key: value for key, value in features.items() if value.type is not FeatureType.ACTION},
+        output_features={key: value for key, value in features.items() if value.type is FeatureType.ACTION},
+        device="cpu", push_to_hub=False,
+    )
+    return config
+
+
+def _consumer_preprocessor(profile: dict, config, stats):
+    from lerobot.policies import make_pre_post_processors
+
+    try:
+        preprocessor, _ = make_pre_post_processors(config, dataset_stats=stats)
+    except (OSError, ImportError) as exc:
+        if profile["policy"] != "pi05":
+            raise
+        raise ValueError("pi05 tokenizer or runtime unavailable: cache google/paligemma-3b-pt-224 "
+                         "on the consumer host after its owner accepts the licence; check the LeRobot pi extra") from exc
+    return preprocessor
+
+
+def check(args: argparse.Namespace) -> dict:
+    """Read-only compatibility sample; never a training handoff or approval."""
+    from fm_tools.data_handoff import _consumer
+
+    if args.profile not in PROFILES:
+        raise ValueError("unknown policy profile")
+    source = args.source_root.expanduser()
+    before = _inventory(source)
+    identity = _digest(before)
+    if getattr(args, "expected_digest", identity) != identity:
+        raise ValueError("dataset identity differs from conversion receipt")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", args.repo_id):
+        raise ValueError("repo ID must be OWNER/NAME")
+    project = args.consumer_project.expanduser().resolve(strict=True)
+    if not (project / "pyproject.toml").is_file():
+        raise ValueError("consumer project has no pyproject.toml")
+    info = json.loads((source / "meta/info.json").read_text())
+    result = {"source_digest": identity, "repo_id": args.repo_id, "profile_id": args.profile,
+              "profile_digest": _digest(PROFILES[args.profile]), "training_ready": False}
+    try:
+        consumer = _consumer(project, source.resolve(), args.repo_id, args.profile,
+                             info["total_frames"], sample_only=True)
+        result.update(status="compatible", consumer=consumer)
+    except ValueError as exc:
+        result.update(status="blocked", reason=str(exc))
+    if _inventory(source) != before:
+        raise ValueError("source changed during compatibility check")
+    return result
+
+
+def _probe(source: Path, repo_id: str, samples: list[tuple[int, str]], profiles: list[str] | None = None) -> dict:
     # FM Policy sets HF_HOME from the machine card before LeRobot imports its cache paths.
     import fm_policy  # noqa: F401
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    from lerobot.configs import FeatureType
     from lerobot.configs.default import DatasetConfig
     from lerobot.configs.train import TrainPipelineConfig
     from lerobot.datasets import LeRobotDatasetMetadata
     from lerobot.datasets.factory import make_dataset
-    from lerobot.policies import make_pre_post_processors
-    from lerobot.policies.act.configuration_act import ACTConfig
-    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-    from lerobot.utils.feature_utils import dataset_to_policy_features
     from torch.utils.data._utils.collate import default_collate
     import torch
 
@@ -145,18 +233,15 @@ def _probe(source: Path, repo_id: str, samples: list[tuple[int, str]]) -> dict:
     if expected != info["total_frames"]:
         raise ValueError("episode ranges do not cover the declared frames")
 
-    features = dataset_to_policy_features(meta.features)
-    inputs = {key: value for key, value in features.items() if value.type is not FeatureType.ACTION}
-    outputs = {key: value for key, value in features.items() if value.type is FeatureType.ACTION}
     consumer = {}
-    for profile_id, profile in PROFILES.items():
-        config_type = SmolVLAConfig if profile["policy"] == "smolvla" else ACTConfig
-        config = config_type(input_features=inputs, output_features=outputs, device="cpu", push_to_hub=False)
+    for profile_id in profiles or ["smolvla-checkers-v1", "act-checkers-v1"]:
+        profile = PROFILES[profile_id]
+        config = _consumer_config(profile, meta)
         train_config = TrainPipelineConfig(
             dataset=DatasetConfig(repo_id=repo_id, root=str(source), video_backend="pyav"), policy=config
         )
         dataset = make_dataset(train_config)
-        preprocessor, _ = make_pre_post_processors(config, dataset_stats=dataset.meta.stats)
+        preprocessor = _consumer_preprocessor(profile, config, dataset.meta.stats)
         checked = []
         for episode_index, role in samples:
             if episode_index not in episode_map:
@@ -230,6 +315,8 @@ def _contract(args: argparse.Namespace) -> dict:
         uv, "run", "--no-sync", "--project", str(project), "python", str(Path(__file__).resolve()),
         "--internal-probe", "--source-root", str(source), "--repo-id", args.repo_id,
     ]
+    for profile in getattr(args, "profiles", None) or []:
+        command.extend(["--profile", profile])
     for number, role in args.samples:
         command.extend(["--sample", f"{number}:{role}"])
     result = subprocess.run(command, cwd=project, env=environment, text=True, capture_output=True, check=False)
@@ -272,8 +359,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--source-root", type=Path, required=True)
         parser.add_argument("--repo-id", required=True)
         parser.add_argument("--sample", dest="samples", type=_sample, action="append", default=[])
+        parser.add_argument("--profile", dest="profiles", action="append", choices=PROFILES)
         args = parser.parse_args(argv[1:])
-        print(json.dumps(_probe(args.source_root, args.repo_id, args.samples)))
+        print(json.dumps(_probe(args.source_root, args.repo_id, args.samples, args.profiles)))
         return 0
     if argv == ["serve"]:
         from fm_tools.data_remote import serve
@@ -299,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         return code
     parser = argparse.ArgumentParser(prog="fm data-refine")
     sub = parser.add_subparsers(dest="verb", required=True)
-    profiles = sub.add_parser("profiles", help="show the P0 ACT and SmolVLA requirements")
+    profiles = sub.add_parser("profiles", help="show ACT, SmolVLA, and pi05 requirements")
     profiles.add_argument("--json", action="store_true")
     contract = sub.add_parser("contract", help="freeze one v3 source and prove the installed consumer")
     contract.add_argument("--source-root", type=Path, required=True)
@@ -308,6 +396,14 @@ def main(argv: list[str] | None = None) -> int:
     contract.add_argument("--repo-id", required=True)
     contract.add_argument("--sample", dest="samples", type=_sample, action="append", default=[])
     contract.add_argument("--json", action="store_true")
+    contract.add_argument("--profile", dest="profiles", action="append", choices=PROFILES,
+                          help="consumer to prove; repeat to select several (default: ACT and SmolVLA)")
+    compatibility = sub.add_parser("check", help="check sample compatibility without approving training")
+    compatibility.add_argument("--source-root", type=Path, required=True)
+    compatibility.add_argument("--consumer-project", type=Path, required=True)
+    compatibility.add_argument("--repo-id", required=True)
+    compatibility.add_argument("--profile", choices=PROFILES, required=True)
+    compatibility.add_argument("--json", action="store_true")
     assessment = sub.add_parser("assess", help="assess a P0 source without changing it")
     assessment.add_argument("--source-root", type=Path, required=True)
     assessment.add_argument("--contract-dir", type=Path, required=True)
@@ -426,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             from fm_tools import data_convert
 
             data = getattr(data_convert, args.verb)(args)
+        elif args.verb == "check":
+            data = check(args)
         elif args.verb == "profiles":
             data = {key: {**value, "digest": _digest(value)} for key, value in PROFILES.items()}
         elif args.verb == "contract":

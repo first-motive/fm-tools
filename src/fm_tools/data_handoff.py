@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from fm_tools.data_derive import _outside, _project
-from fm_tools.data_refine import PROFILES, SCHEMA_VERSION, _canonical, _digest, _inventory
+from fm_tools.data_refine import PROFILES, SCHEMA_VERSION, _canonical, _digest, _inventory, _consumer_config, _consumer_preprocessor
 from fm_tools.data_review import inputs, verify_approval
 
 
@@ -33,7 +33,7 @@ def _receipt(path: Path, manifest: dict, report: dict) -> dict:
     return receipt
 
 
-def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expected: int) -> dict:
+def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expected: int, *, sample_only: bool = False) -> dict:
     environment = os.environ.copy()
     environment.update(UV_OFFLINE="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
@@ -41,7 +41,7 @@ def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expec
     )))
     uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
     request = {"dataset": str(dataset), "repo_id": repo_id,
-               "profile_id": profile_id, "expected_frames": expected}
+               "profile_id": profile_id, "expected_frames": expected, "sample_only": sample_only}
     with tempfile.TemporaryDirectory(prefix="fm-p3-request-") as directory:
         request_file = Path(directory) / "request.json"
         request_file.write_bytes(_canonical(request))
@@ -51,7 +51,8 @@ def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expec
             cwd=project, env=environment, text=True, capture_output=True, check=False,
         )
     if result.returncode:
-        raise ValueError(f"consumer verification failed: {result.stderr.strip()[-1600:]}")
+        detail = (result.stderr.strip().splitlines() or ["worker returned no detail"])[-1][-1600:]
+        raise ValueError(f"consumer verification failed: {detail}")
     return json.loads(result.stdout)
 
 
@@ -156,15 +157,10 @@ def _internal_verify(request: dict) -> dict:
     # Import the exact installed FM Policy and LeRobot path only in this worker.
     import fm_policy  # noqa: F401
     import torch
-    from lerobot.configs import FeatureType
     from lerobot.configs.default import DatasetConfig
     from lerobot.configs.train import TrainPipelineConfig
     from lerobot.datasets import LeRobotDatasetMetadata
     from lerobot.datasets.factory import make_dataset
-    from lerobot.policies import make_pre_post_processors
-    from lerobot.policies.act.configuration_act import ACTConfig
-    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-    from lerobot.utils.feature_utils import dataset_to_policy_features
     from torch.utils.data._utils.collate import default_collate
 
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -172,18 +168,12 @@ def _internal_verify(request: dict) -> dict:
     profile = PROFILES[request["profile_id"]]
     root = Path(request["dataset"])
     meta = LeRobotDatasetMetadata(request["repo_id"], root=str(root))
-    features = dataset_to_policy_features(meta.features)
-    config_type = SmolVLAConfig if profile["policy"] == "smolvla" else ACTConfig
-    config = config_type(
-        input_features={key: value for key, value in features.items() if value.type is not FeatureType.ACTION},
-        output_features={key: value for key, value in features.items() if value.type is FeatureType.ACTION},
-        device="cpu", push_to_hub=False,
-    )
+    config = _consumer_config(profile, meta)
     dataset = make_dataset(TrainPipelineConfig(
         dataset=DatasetConfig(repo_id=request["repo_id"], root=str(root), video_backend="pyav"),
         policy=config,
     ))
-    preprocessor, _ = make_pre_post_processors(config, dataset_stats=dataset.meta.stats)
+    preprocessor = _consumer_preprocessor(profile, config, dataset.meta.stats)
     if len(dataset) != request["expected_frames"]:
         raise ValueError("consumer frame count differs from frozen receipt")
     cameras = sorted(key for key, value in meta.features.items() if value["dtype"] == "video")
@@ -191,9 +181,15 @@ def _internal_verify(request: dict) -> dict:
     if sum(row["length"] for row in episode_rows) != len(dataset):
         raise ValueError("consumer episodes do not cover all rows")
     padding = 0
-    for episode in episode_rows:
+    checked_frames = 0
+    selected = episode_rows
+    if request.get("sample_only") and episode_rows:
+        selected = [episode_rows[index] for index in sorted({0, len(episode_rows) // 2, len(episode_rows) - 1})]
+    for episode in selected:
         start, stop = episode["dataset_from_index"], episode["dataset_to_index"]
-        for index in range(start, stop):
+        indices = sorted({start, (start + stop) // 2, stop - 1}) if request.get("sample_only") else range(start, stop)
+        for index in indices:
+            checked_frames += 1
             sample = dataset[index]
             if int(sample["episode_index"]) != episode["episode_index"] or int(sample["frame_index"]) != index - start:
                 raise ValueError(f"consumer crossed episode boundary at row {index}")
@@ -209,6 +205,8 @@ def _internal_verify(request: dict) -> dict:
             if int(pad.sum()) != expected_pad:
                 raise ValueError(f"consumer action window crosses episode {episode['episode_index']}")
             padding += expected_pad
+            if profile["language_required"] and (not isinstance(sample.get("task"), str) or not sample["task"].strip()):
+                raise ValueError(f"consumer task is empty at row {index}")
             processed = preprocessor(default_collate([sample]))
             if profile["language_required"] and "observation.language.tokens" not in processed:
                 raise ValueError(f"consumer task tokens missing at row {index}")
@@ -225,7 +223,8 @@ def _internal_verify(request: dict) -> dict:
             "cameras": cameras, "chunk_size": config.chunk_size,
             "boundary_padding": padding,
             "dataset_statistics_sha256": hashlib.sha256(stats_path.read_bytes()).hexdigest(),
-            "all_rows_and_required_media_decoded": True}
+            "checked_frames": checked_frames,
+            "all_rows_and_required_media_decoded": not request.get("sample_only", False)}
 
 
 if __name__ == "__main__":

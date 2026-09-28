@@ -129,7 +129,7 @@ def test_data_refine_profiles_are_discoverable_and_require_semantic_evidence(tmp
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     assert main(["data-refine", "profiles", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert set(result["data"]) == {"smolvla-checkers-v1", "act-checkers-v1"}
+    assert set(result["data"]) == {"smolvla-checkers-v1", "act-checkers-v1", "pi05-canpick-v1"}
     assert all("state_action_units" in profile["required_evidence"] for profile in result["data"].values())
     rows = catalogue(discover(tmp_path, reserved=BUILTIN_VERBS))
     assert next(row for row in rows if row["verb"] == "data-refine")["kind"] == "forwarding"
@@ -895,3 +895,126 @@ def test_scan_and_convert_run_as_durable_jobs_and_cancel_goes_through_remote(tmp
         assert running.wait(timeout=5) != 0
     finally:
         running.kill()
+
+
+def test_pi05_quantiles_refuse_missing_invalid_and_oversized_vectors():
+    import pytest
+    from fm_tools.data_refine import _pi05_statistics
+
+    features = {key: {"shape": [2]} for key in ("observation.state", "action")}
+    stats = {key: {"q01": [0.0, 0.0], "q99": [1.0, 1.0]} for key in features}
+    assert _pi05_statistics(features, stats) == {"observation.state": 2, "action": 2}
+    for bad in ({}, {"q01": [0.0], "q99": [1.0]},
+                {"q01": [2.0, 0.0], "q99": [1.0, 1.0]},
+                {"q01": [float("nan"), 0.0], "q99": [1.0, 1.0]}):
+        with pytest.raises(ValueError, match="action.*q01.*q99"):
+            _pi05_statistics(features, {**stats, "action": bad})
+    with pytest.raises(ValueError, match="1.*32"):
+        _pi05_statistics({**features, "action": {"shape": [33]}}, stats)
+
+
+def test_compatibility_remote_refuses_paths_unknown_profiles_and_changed_data(tmp_path, monkeypatch, capsys):
+    from fm_tools.data_refine import _inventory, _digest
+
+    workspace = _processing_host(tmp_path, monkeypatch)
+    base = workspace / "data/robot-data-processing/p4-datasets/first-motive_can"
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    (source / "meta/info.json").write_text('{"total_frames":1}')
+    digest = _digest(_inventory(source))
+    artifact = base / digest
+    artifact.mkdir(parents=True)
+    source.rename(artifact / "dataset")
+    (artifact / "conversion.json").write_text(json.dumps({"repo_id": "first-motive/can", "content_digest": digest}))
+    parameters = {"repo_id": "first-motive/can", "content_digest": digest, "profile": "pi05-canpick-v1"}
+    request = {"schema_version": 1, "operation": "compatibility", "parameters": parameters}
+    for extra in ({"source_root": "/etc"}, {"profile": "unknown"}, {"repo_id": "../escape"}):
+        assert _remote({**request, "parameters": {**parameters, **extra}}) == 3
+        assert json.loads(capsys.readouterr().out)["state"] == "refused"
+    (artifact / "dataset/meta/info.json").write_text('{"total_frames":2}')
+    assert _remote(request) == 3
+    assert "identity" in json.loads(capsys.readouterr().out)["detail"]
+
+
+def test_pi05_installed_consumer_and_split(tmp_path, monkeypatch):
+    """Optional installed-runtime proof, retained as a repeatable JSON artifact."""
+    import os
+    import subprocess
+    import pytest
+
+    project = os.environ.get("FM_PI05_TEST_PROJECT")
+    if not project:
+        pytest.skip("set FM_PI05_TEST_PROJECT to the installed fm-policy checkout")
+    script = r'''
+import json, sys
+from pathlib import Path
+import numpy as np
+import fm_policy
+from lerobot.datasets import LeRobotDataset
+from lerobot.configs.video import RGBEncoderConfig
+from fm_tools.data_refine import check, _contract
+from fm_tools.data_handoff import _internal_verify
+from fm_tools.data_split import _internal_split
+from argparse import Namespace
+root = Path(sys.argv[1])
+features = {"observation.state": {"dtype": "float32", "shape": (2,), "names": ["a", "b"]},
+            "action": {"dtype": "float32", "shape": (2,), "names": ["a", "b"]},
+            "observation.images.front": {"dtype": "video", "shape": (16, 16, 3), "names": ["height", "width", "channels"]}}
+ds = LeRobotDataset.create("first-motive/pi05-test", fps=10, root=root / "source", features=features, video_backend="pyav", rgb_encoder=RGBEncoderConfig(vcodec="h264"))
+for episode in range(2):
+    for frame in range(4):
+        value = episode * 100 + frame
+        ds.add_frame({"observation.state": np.array([value, value+1], dtype=np.float32),
+                      "action": np.array([value, value+1], dtype=np.float32),
+                      "observation.images.front": np.full((16,16,3), frame*30, dtype=np.uint8), "task": "pick up the can"})
+    ds.save_episode()
+ds.finalize()
+args = Namespace(source_root=root / "source", consumer_project=Path(sys.argv[2]), repo_id="first-motive/pi05-test", profile="pi05-canpick-v1")
+result = check(args)
+assert result["training_ready"] is False
+import os
+if os.environ.get("FM_PI05_REQUIRE_TOKENIZER") == "1":
+    assert result["status"] == "compatible", result
+if result["status"] == "compatible":
+    proof = _internal_verify({"dataset": str(args.source_root), "repo_id": args.repo_id,
+                              "profile_id": args.profile, "expected_frames": 8})
+    assert proof["checked_frames"] == 8 and proof["all_rows_and_required_media_decoded"], proof
+    contract_args = Namespace(**vars(args), state_root=root / "contracts", samples=[(0,"left")], profiles=[args.profile])
+    first = _contract(contract_args)
+    assert _contract(contract_args)["status"] == "reused"
+    assert first["training_ready"] is False
+# The installed factory replaces visual statistics before ACT preprocessing.
+# Observe that external-library call while still executing the real processor.
+from unittest.mock import patch
+from lerobot.policies import make_pre_post_processors
+seen_stats = []
+def observed_processors(config, dataset_stats):
+    seen_stats.append(dataset_stats)
+    return make_pre_post_processors(config, dataset_stats=dataset_stats)
+with patch("lerobot.policies.make_pre_post_processors", side_effect=observed_processors):
+    act = _internal_verify({"dataset": str(args.source_root), "repo_id": args.repo_id,
+                            "profile_id": "act-checkers-v1", "expected_frames": 8})
+assert act["all_rows_and_required_media_decoded"]
+np.testing.assert_allclose(np.asarray(seen_stats[0]["observation.images.front"]["mean"]).reshape(-1), [0.485, 0.456, 0.406])
+assert result["status"] in {"compatible", "blocked"}, result
+if result["status"] == "blocked":
+    assert "tokenizer" in result["reason"], result
+stats = root / "source/meta/stats.json"
+saved = json.loads(stats.read_text())
+broken = json.loads(stats.read_text()); broken["action"].pop("q01")
+stats.write_text(json.dumps(broken))
+missing = check(args)
+assert missing["status"] == "blocked" and "q01" in missing["reason"], missing
+stats.write_text(json.dumps(saved))
+split = _internal_split({"repo_id": args.repo_id, "dataset": str(args.source_root), "splits": {"train": [0], "test": [1]}, "output": str(root / "split"), "profile_id": args.profile})
+train_stats = json.loads((root / "split/train/meta/stats.json").read_text())
+assert max(train_stats["action"]["q99"]) < 10, train_stats["action"]
+(root / "pi05-evidence.json").write_text(json.dumps({"consumer": result, "missing_quantile": missing, "split": split, "train_stats": train_stats}, indent=2))
+'''
+    environment = os.environ.copy()
+    environment.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+                       HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", CUDA_VISIBLE_DEVICES="")
+    result = subprocess.run(["uv", "run", "--no-sync", "--project", project, "python", "-c", script,
+                             str(tmp_path), project], env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pi05-evidence.json").is_file()
