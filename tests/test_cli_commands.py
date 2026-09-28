@@ -226,6 +226,12 @@ def test_assessment_counts_every_episode_and_frame_without_inferred_arm():
     assert "camera_duration_mismatch" not in {item["code"] for item in report["findings"]}
     assert report["training_ready"] is False
     assert _digest(report) == _digest(_report(manifest, consumer, "smolvla-checkers-v1", scan, None))
+    consumer["profiles"]["pi05-canpick-v1"] = {
+        **consumer["profiles"]["smolvla-checkers-v1"],
+        "profile_digest": _digest(PROFILES["pi05-canpick-v1"]),
+    }
+    pi05 = _report(manifest, consumer, "pi05-canpick-v1", scan, None)
+    assert "instruction_grounding" in {item["code"] for item in pi05["findings"]}
 
 
 def test_assessment_refuses_a_source_that_differs_from_p0(tmp_path, monkeypatch, capsys):

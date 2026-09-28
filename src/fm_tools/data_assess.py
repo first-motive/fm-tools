@@ -254,7 +254,7 @@ def _report(manifest: dict, consumer: dict, profile_id: str, scan: dict, anvil: 
     if profile_id == "act-checkers-v1" and len(tasks) > 1:
         findings.append(_finding("act_task_scope_mixed", "blocked", "critical", "dataset",
                                  {"task_count": len(tasks)}))
-    if profile_id == "smolvla-checkers-v1":
+    if PROFILES[profile_id]["language_required"]:
         findings.append(_finding("instruction_grounding", "unavailable", "warning", "dataset", None))
     for field in consumer["unknown_semantics"]:
         findings.append(_finding(field, "unavailable", "critical", "dataset", None))
