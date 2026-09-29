@@ -355,6 +355,12 @@ def main(argv: list[str] | None = None) -> int:
         if code is not None:
             return code
 
+    # A client-only wheel can forward to the sole remote manifest owner. This
+    # is not a reserved builtin and never shadows a workspace registration.
+    if argv and argv[0] == "archive" and "archive" not in discovery.commands:
+        from fm_tools.archive_transfer import client_archive
+        return client_archive(argv[1:])
+
     args = _build_parser(discovery.commands, version=version_line(root)).parse_args(argv)
     # ``commands`` reports the discovery this invocation already made rather than
     # scanning a second time, so what it lists is what the dispatcher would run.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fm-tools"
-version = "0.20.0"
+version = "0.21.0"
 description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,9 +24,11 @@ dependencies = ["textual>=0.74", "rich"]
 [project.scripts]
 fm = "fm_tools.cli:main"
 fm-pick = "fm_tools.tui.pick:main"
+fm-archive-workflow = "fm_tools.archive_workflow:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
+archive = ["boto3", "PyYAML"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fm_tools"]

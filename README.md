@@ -40,6 +40,9 @@ backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)
 
 ## The `fm` CLI
 
+The [Cloud Storage coordinator](docs/cloud-storage.md) provides the shared
+library, organisation, and verified copy jobs behind `fm archive`.
+
 `fm` is a thin CLI over every First Motive repo — one discoverable,
 machine-readable surface for developers and AI agents landing cold. It ships as a
 console entry point with the wheel.

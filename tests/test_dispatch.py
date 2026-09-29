@@ -26,6 +26,20 @@ from fm_tools.cli.registry import REPOS
 FM_ROS2 = next(repo for repo in REPOS if repo.name == "fm-ros2")
 FM_DESKTOP = next(repo for repo in REPOS if repo.name == "fm-desktop")
 
+
+def test_archive_workflow_refuses_unconfigured_coordinator(tmp_path, monkeypatch, capsys):
+    from fm_tools.archive_workflow import main as archive_main
+
+    monkeypatch.setenv("FM_MACHINE_FILE", str(tmp_path / "absent.json"))
+    assert archive_main(["library", "locations", "--json"]) == 3
+    result = __import__("json").loads(capsys.readouterr().out)
+    assert result["error_code"] == "coordinator_not_configured"
+    assert result["ok"] is False
+    assert not list(tmp_path.iterdir()), "a missing coordinator must not create a local authority"
+    assert archive_main(["library", "list", "--unknown", "--json"]) == 3
+    invalid = __import__("json").loads(capsys.readouterr().out)
+    assert invalid["error_code"] == "invalid_arguments" and invalid["operation"] == "library.list"
+
 PASS = "#!/bin/sh\nexit 0\n"
 ECHO_ARGS = '#!/bin/sh\nprintf "%s\\n" "$@" > args.txt\n'
 
@@ -264,3 +278,17 @@ def test_the_environment_is_untouched_for_a_command_declaring_no_credentials(
     assert dispatch(discover(tmp_path), "demo", []) == 0
     assert (checkout / "env.txt").read_text() == "inherited"
     assert os.environ["FM_MARKER"] == "inherited"
+
+
+def test_client_only_archive_forwards_to_the_registered_remote_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv('FM_HOME', str(tmp_path))
+    calls = []
+    def ssh(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 3)
+    monkeypatch.setattr(subprocess, 'run', ssh)
+    assert main(['archive', '--host', 'tower-alias', 'library', 'search', 'two words', '--json']) == 3
+    assert calls[-1][-2] == 'tower-alias'
+    assert calls[-1][-1] == "fm archive library search 'two words' --json"
+    assert main(['archive', '--host', '-oProxyCommand=bad', 'library', 'list']) == 3
+    assert len(calls) == 1

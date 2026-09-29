@@ -1,0 +1,27 @@
+...@styles
+direction: right
+
+clients: "Desktop / CLI" { class: node }
+route: "fm-ros2\nfm archive" { class: pkg }
+coordinator: "fm-tools\nPlans And Jobs" { class: pkg }
+card: "fm-setup\nMachine Card" { class: art }
+library: "fm-data\nLibrary And Organisation" { class: pkg }
+database: "SQLite\nInventory And Exports" { class: art }
+sources: "Registered Sources\nFinalized Members" { class: art }
+intake: "Existing Intake\nPrivate Staging" { class: pkg }
+archive: "fm-data\nShared Writer Lock" { class: pkg }
+copies: "Managed Copies\nFull SHA-256 Check" { class: art }
+bucket: "Backblaze\nVersions And Receipts" { class: art }
+
+clients -> route: typed commands
+route -> coordinator
+card -> coordinator: account and locations
+coordinator -> library: reads and metadata changes
+library -> database
+sources -> intake: frozen selection
+coordinator -> intake: durable job
+intake -> copies: verify and promote
+intake -> archive: verified source
+archive -> bucket: immutable receipt
+bucket -> copies: exact-version restore
+library -> archive: organisation snapshot
