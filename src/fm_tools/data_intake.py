@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from collections.abc import Callable
 
@@ -86,7 +87,7 @@ def _freeze(root: Path) -> None:
 
 
 def copy_members(host: str | None, origin: str, staging: Path, listing: Path, members: list[str],
-                 *, checkpoint: Callable[[], None] | None = None) -> None:
+                 *, checkpoint: Callable[[], None] | None = None, destination_host: str | None = None) -> None:
     """Use the intake transport for one exact, validated member list."""
     if host is not None and not HOST.fullmatch(host):
         raise ValueError("invalid source host")
@@ -95,35 +96,51 @@ def copy_members(host: str | None, origin: str, staging: Path, listing: Path, me
     if any(not name or Path(name).is_absolute() or ".." in name.split("/") or "\\" in name
            or any(ord(char) < 32 for char in name) for name in members):
         raise ValueError("invalid source member")
+    if destination_host is not None and (host is not None or not HOST.fullmatch(destination_host)):
+        raise ValueError("invalid destination host")
+    if not staging.is_absolute() or ".." in staging.parts:
+        raise ValueError("invalid destination root")
     listing.write_text("".join(name + "\n" for name in members))
     command = ["rsync", "-rtc", "--partial", "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=", f"--files-from={listing}"]
     if host is not None:
         command += ["-e", shlex.join(SSH), f"{host}:{shlex.quote(origin)}"]
     else:
         command.append(origin)
-    if checkpoint is None:
-        returncode = subprocess.run([*command, f"{staging}/"], stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, check=False).returncode
-    else:
-        checkpoint()
-        with subprocess.Popen([*command, f"{staging}/"], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, start_new_session=True) as child:
-            try:
-                while True:
-                    checkpoint()
-                    try:
-                        returncode = child.wait(timeout=0.25)
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
-            finally:
-                if child.poll() is None:
-                    os.killpg(child.pid, signal.SIGTERM)
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(child.pid, signal.SIGKILL)
-                        child.wait()
+    destination = f"{staging}/"
+    if destination_host is not None:
+        command[-1:-1] = ["-e", shlex.join(SSH)]
+        destination = f"{destination_host}:{shlex.quote(destination)}"
+    for attempt in range(3):
+        if checkpoint is None:
+            returncode = subprocess.run([*command, destination], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, check=False).returncode
+        else:
+            checkpoint()
+            with subprocess.Popen([*command, destination], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, start_new_session=True) as child:
+                try:
+                    while True:
+                        checkpoint()
+                        try:
+                            returncode = child.wait(timeout=0.25)
+                            break
+                        except subprocess.TimeoutExpired:
+                            pass
+                finally:
+                    if child.poll() is None:
+                        os.killpg(child.pid, signal.SIGTERM)
+                        try:
+                            child.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(child.pid, signal.SIGKILL)
+                            child.wait()
+        if returncode not in {10, 12, 30, 35} or attempt == 2:
+            break
+        for _ in range(2 ** attempt * 2):
+            if checkpoint is not None:
+                checkpoint()
+            time.sleep(0.25)
+
     if returncode:
         raise ValueError("transfer interrupted; rerun to resume")
 

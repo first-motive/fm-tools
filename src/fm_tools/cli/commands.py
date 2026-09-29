@@ -160,6 +160,9 @@ def catalogue(discovery: Discovery, root: Path | None = None) -> list[dict]:
         }
         for name, command in sorted(discovery.commands.items())
     )
+    if "archive" not in discovery.commands:
+        rows.append({"verb": "archive", "repo": "fm-ros2", "script": "", "kind": "forwarding",
+                     "help": "Forward library/copy/jobs to the archive owner with --host; copy download runs locally.", "delegates": []})
     return rows
 
 

@@ -10,6 +10,11 @@ the existing service credential route. Flat archive verbs and `data-archive`
 retain their existing meanings. `service status|preflight|reconcile|install`
 names the service operations explicitly.
 
+A client-only Tools installation exposes `fm archive --host` through SSH
+when no workspace manifest owns `archive`. It does not reserve that verb or
+replace the workspace owner. Local download needs no Data checkout or
+provider credentials on the Mac.
+
 ## Configure The Coordinator
 
 Install fm-tools with the `archive` extra and a matching fm-data checkout.
@@ -44,6 +49,9 @@ fm archive --host <coordinator> library list --limit 100 --offset 0 --json
 fm archive --host <coordinator> library search 'can pick' --json
 fm archive --host <coordinator> library show <item> --json
 fm archive --host <coordinator> library files <item> --location <location> --json
+fm archive --host <coordinator> library preview <item> --location <location> --member <member> --json
+fm archive --host <coordinator> library history <item> --json
+fm archive --host <coordinator> library select --revision <revision> --format <format> --json
 ```
 
 Use the returned revision on subsequent pages. If it changes, reload page
@@ -51,6 +59,16 @@ zero. Browsing does not hash media or scan the bucket. An explicit location
 refresh can scan the provider. A failed scan retains last-known copies. A
 cached catalogue keeps its original observation time and partial coverage.
 Unknown formats and offline locations remain visible.
+
+Preview reads one selected member: text is limited to 64 KiB and images or
+videos to 8 MiB. Larger media and cloud-only members require a verified
+download. History records organisation changes; jobs and copy facts provide
+the separate transfer evidence. Desktop saves its last library page and marks
+it as a saved snapshot when the coordinator is unavailable.
+
+`library select` freezes up to 10,000 matching IDs at one library revision.
+Pass its ID with `--selection` to a copy plan, item filing, or collection
+mutation. A changed revision is refused. Execution never reruns the filter.
 
 The item identity includes producer and source identity. A validated managed
 source receipt can join a source and its archive copy. An unproven legacy
@@ -86,6 +104,7 @@ fm archive jobs pause <request> --json
 fm archive jobs resume <request> --json
 fm archive jobs cancel <request> --json
 fm archive jobs retry <request> --json
+fm archive copy verify <item> --location <location> --full --json
 ```
 
 A plan freezes exact source members, hashes, item revisions, named endpoints
@@ -96,6 +115,11 @@ Pause and cancel act at safe transfer boundaries and retain completed work.
 Multipart uploads retain their provider upload IDs. Resume reuses the same
 request and frozen plan; it cannot silently change the selection.
 
+Plans report the route, expected new bytes, temporary bytes and destination
+reuse or staging result. Remote destination conflicts and free space are
+checked before a job starts. Transient rsync failures get at most three
+attempts; permission and format failures need an operator correction.
+
 Supported source adapters are:
 
 | Adapter | Inventory | Copy Boundary |
@@ -103,7 +127,8 @@ Supported source adapters are:
 | `recordings` | Recorder session index | One finalized FM Data MCAP take, its sidecar and exact episode tactile files; require two minutes of source quiet and closed MCAP shards. |
 | `anvil` | Sessions and episode status metadata | A complete finalized session through the existing governed intake route; refuse an active or unknown session on the source. |
 | `lerobot` | Versioned dataset metadata | A complete v3.0 dataset, including shared files. Require a full match to its governed conversion or derivative receipt, or a wholly read-only tree. v2 and unknown formats remain readable inventory, not copy candidates. |
-| `catalogue` | All existing archive catalogue kinds | Managed source receipts support exact-version restore. Legacy objects remain browsable in place. |
+| `catalogue` | All existing archive catalogue kinds | Managed source and native raw/derived receipts support exact-version restore. Unreceipted legacy objects remain browsable and need receipt reconciliation before verified restore. |
+| `imports` | Accepted copy bindings | Receive into a registered private import root; verify exact members and bytes before publishing a copy. Accepted copies can be copied again. |
 | `evidence` | One explicitly configured published evidence directory | Require the directory and every member to be read-only. Copy the complete set as `evidence-v1`; preserve source, review and consumer digests inside the original evidence files. |
 | `unsupported` | Explicit coverage state | No source adapter is inferred. Accepted copies at that destination retain their evidence. |
 
@@ -119,6 +144,29 @@ adapters. Select and copy each set, then retain the item revisions and receipt
 digests in the acceptance report. A dataset copy alone does not archive its
 sibling conversion receipt or review state. Include those original records in
 the evidence export. Storage does not create or change a human approval.
+
+## Copy To Another Host Or This Mac
+
+A remote destination uses `adapter: imports`, `ssh_host`, and
+`remote_location` on the coordinator card. That remote ID must name a local
+`imports` location on the receiver card with `root` and `copy_destination`.
+Add `copy_source` to permit a later copy from it. Both hosts need matching
+Tools and Data versions. The receiver owns the root path and accepted-copy
+evidence. Register only an approved import directory, never a capture root.
+
+To download to a Mac, plan a copy to `operator-download`, start it, and wait
+for its job to complete. The coordinator verifies a staging copy first.
+
+```sh
+fm archive copy download <plan> --coordinator <ssh-alias> --destination <local-directory> --json
+```
+
+Desktop offers **Save download** for a completed download job. The client
+pulls only the frozen members over SSH, checks every SHA-256, and writes a
+local receipt. Repeating this command resumes private staging or reuses an
+exact existing copy. Conflicting content is refused. Verified staged files
+reduce the remaining space estimate. The coordinator job persists if Desktop
+closes; rerun the local download command if its client process stops.
 
 ## Share The Archive Writer
 

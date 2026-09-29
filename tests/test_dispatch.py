@@ -278,3 +278,17 @@ def test_the_environment_is_untouched_for_a_command_declaring_no_credentials(
     assert dispatch(discover(tmp_path), "demo", []) == 0
     assert (checkout / "env.txt").read_text() == "inherited"
     assert os.environ["FM_MARKER"] == "inherited"
+
+
+def test_client_only_archive_forwards_to_the_registered_remote_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv('FM_HOME', str(tmp_path))
+    calls = []
+    def ssh(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 3)
+    monkeypatch.setattr(subprocess, 'run', ssh)
+    assert main(['archive', '--host', 'tower-alias', 'library', 'search', 'two words', '--json']) == 3
+    assert calls[-1][-2] == 'tower-alias'
+    assert calls[-1][-1] == "fm archive library search 'two words' --json"
+    assert main(['archive', '--host', '-oProxyCommand=bad', 'library', 'list']) == 3
+    assert len(calls) == 1

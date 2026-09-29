@@ -56,16 +56,19 @@ def configuration() -> tuple[object, dict]:
     for location in locations:
         if (not isinstance(location, dict) or not isinstance(location.get("id"), str)
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", location["id"])
-                or location["id"] in identities or not isinstance(location.get("name"), str)):
+                or location["id"] == "operator-download" or location["id"] in identities or not isinstance(location.get("name"), str)):
             raise Refusal("invalid_location")
-        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer"}
+        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer", "remote_location"}
                 or location.get("kind") not in {"tower", "robot", "jetson", "backblaze", "mac", "other"}
-                or location.get("adapter") not in {"recordings", "lerobot", "catalogue", "anvil", "evidence", "unsupported"}
+                or location.get("adapter") not in {"recordings", "lerobot", "catalogue", "anvil", "evidence", "imports", "unsupported"}
                 or location.get("archive_writer", "legacy") not in {"legacy", "coordinator"}):
             raise Refusal("invalid_location")
         capabilities = location.get("capabilities", [])
         if not isinstance(capabilities, list) or any(value not in {"browse", "copy_source", "copy_destination"} for value in capabilities):
             raise Refusal("invalid_capabilities")
+        for key, pattern in (("remote_location", r"[A-Za-z0-9_.-]{1,100}"), ("ssh_host", r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}")):
+            if key in location and (not isinstance(location[key], str) or not re.fullmatch(pattern, location[key])):
+                raise Refusal("invalid_location")
         identities.add(location["id"])
         if "root" in location and (not isinstance(location["root"], str)
                                    or not Path(location["root"]).is_absolute()
@@ -110,6 +113,24 @@ def _read_json(path: Path, *, maximum: int = 8 * 1024 * 1024) -> object:
 def refresh(library: object, location: dict) -> dict:
     """Read only declared roots. Unknown adapters stay visible as unsupported."""
     adapter = location.get("adapter")
+    if adapter == "imports":
+        items = []
+        for binding in library.local_copies(location["id"]):
+            item = library.show(binding["item_id"])
+            try:
+                if location.get("ssh_host"):
+                    from fm_tools.archive_transfer import remote
+                    remote(location["ssh_host"], ["copy", "receiver"], {
+                        "action": "source", "location": location.get("remote_location", location["id"]), "item": item["id"]})
+                else:
+                    from fm_data_archive.core.source import _safe_path
+                    if not _safe_path(Path(location["root"]), binding["relative_path"]).is_dir():
+                        continue
+                copy = next(row for row in item["copies"] if row["location_id"] == location["id"])
+                items.append({**item, **copy, "revision": binding["manifest"]["revision"]})
+            except (ValueError, OSError):
+                return library.scan(location, items, coverage="partial")
+        return library.scan(location, items, coverage="complete")
     if adapter not in {"catalogue", "lerobot", "recordings", "anvil", "evidence"}:
         return library.scan(location, [], coverage="unsupported")
     if adapter != "catalogue":
@@ -215,22 +236,24 @@ def _probe_process(command: list[str], script: bytes, *, timeout: float, maximum
                 child.wait()
 
 
-def inventory(location: dict, *, source: str | None = None, relative: str = "", file_page: tuple[int, int] | None = None) -> dict:
-    from fm_tools.archive_probe import files, freeze, scan
+def inventory(location: dict, *, source: str | None = None, relative: str = "", file_page: tuple[int, int] | None = None, preview_member: str | None = None) -> dict:
+    from fm_tools.archive_probe import files, freeze, scan, preview
     from fm_tools.data_intake import HOST, SSH
 
     request = {"root": location["root"], "adapter": location["adapter"],
                "producer": location.get("producer_id", location["id"])}
     if source is not None:
         request.update(source=source, relative=relative)
-    operation = "files" if file_page is not None else "scan" if source is None else "freeze"
+    operation = "preview" if preview_member is not None else "files" if file_page is not None else "scan" if source is None else "freeze"
     if operation == "scan":
         request["exclude"] = location.get("_exclude", [])
     if file_page is not None:
         request.update(offset=file_page[0], limit=file_page[1])
+    if preview_member is not None:
+        request["member"] = preview_member
     host = location.get("ssh_host")
     if not host:
-        return {"scan": scan, "freeze": freeze, "files": files}[operation](**request)
+        return {"scan": scan, "freeze": freeze, "files": files, "preview": preview}[operation](**request)
     if not HOST.fullmatch(host):
         raise Refusal("invalid_source_host")
     request["operation"] = operation
@@ -272,11 +295,18 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--reassign-to")
     result.add_argument("--destination")
     result.add_argument("--source")
+    result.add_argument("--member")
+    result.add_argument("--selection")
+    result.add_argument("--coordinator")
+    result.add_argument("--full", action="store_true")
     result.add_argument("--timeout", type=int, default=30)
     return result
 
 
 def _location(config: dict, identity: str) -> dict:
+    if identity == "operator-download":
+        return {"id": identity, "name": "Download staging (tower)", "kind": "tower", "adapter": "imports",
+                "root": str(Path(config["state_dir"]) / "downloads"), "capabilities": ["copy_destination"]}
     location = next((row for row in config["locations"] if row["id"] == identity), None)
     if location is None:
         raise Refusal("location_unknown")
@@ -289,6 +319,15 @@ def _source(config: dict, item: dict, location: dict) -> tuple[Path | None, dict
 
     if "copy_source" not in location.get("capabilities", []):
         raise Refusal("source_copy_unsupported")
+    if location.get("ssh_host") and location.get("adapter") == "imports":
+        from fm_tools.archive_transfer import remote
+        result = remote(location["ssh_host"], ["copy", "receiver"], {
+            "action": "source", "location": location.get("remote_location", location["id"]), "item": item["id"]})
+        from fm_data_archive.core.source import validate_manifest
+        validate_manifest(result["manifest"])
+        if (result["manifest"]["producer_id"], result["manifest"]["source_id"]) != (item["producer_id"], item["source_id"]):
+            raise Refusal("source_identity_mismatch")
+        return Path(result["root"]), result["manifest"]
     if location.get("adapter") == "anvil":
         from fm_tools.data_intake import probe
         from fm_data_archive.core.source import _digest as manifest_digest, validate_manifest
@@ -368,8 +407,31 @@ def _source(config: dict, item: dict, location: dict) -> tuple[Path | None, dict
     return path, frozen["manifest"]
 
 
+def _archive_receipt(item: dict, copy: dict, store: object) -> dict:
+    from fm_data_archive.core.source import archive_export, validate_receipt
+    from fm_data_archive.core.layout import is_layout_key
+    key = copy.get("receipt")
+    if not isinstance(key, str) or not is_layout_key(key) or not key.startswith("receipts/"):
+        raise Refusal("source_receipt_required")
+    original = json.loads(store.get_bytes(key))
+    if original.get("kind") == "managed_source":
+        receipt = validate_receipt(original)
+    else:
+        if original.get("receipt_key") != key:
+            raise Refusal("receipt_identity_mismatch")
+        prefix = copy.get("archive_prefix")
+        if not isinstance(prefix, str) or not any(row.get("key", "").startswith(prefix) for row in original.get("objects", [])):
+            raise Refusal("receipt_identity_mismatch")
+        receipt = archive_export(original, producer_id=item["producer_id"], source_id=item["source_id"])
+    manifest = receipt["manifest"]
+    if (manifest["producer_id"], manifest["source_id"]) != (item["producer_id"], item["source_id"]) or (
+            copy.get("revision") is not None and copy["revision"] != manifest["revision"]):
+        raise Refusal("receipt_identity_mismatch")
+    return receipt
+
+
 def copy_plan(args: argparse.Namespace, config: dict, library: object, state: Path) -> dict:
-    if args.revision != library.revision or not args.item or len(set(args.item)) != len(args.item) or len(args.item) > 500:
+    if args.revision != library.revision or not args.item or len(set(args.item)) != len(args.item) or len(args.item) > 10_000:
         raise Refusal("revision_or_selection_invalid")
     source = _location(config, args.source)
     destination = _location(config, args.destination)
@@ -377,8 +439,8 @@ def copy_plan(args: argparse.Namespace, config: dict, library: object, state: Pa
         raise Refusal("source_copy_unsupported")
     if source["id"] == destination["id"] or "copy_destination" not in destination.get("capabilities", []):
         raise Refusal("destination_unsupported")
-    if destination.get("ssh_host"):
-        raise Refusal("destination_unsupported")
+    if destination.get("ssh_host") and destination.get("adapter") != "imports":
+        raise Refusal("registered_import_root_required")
     rows = []
     for identity in args.item:
         item = library.show(identity)
@@ -390,22 +452,45 @@ def copy_plan(args: argparse.Namespace, config: dict, library: object, state: Pa
             raise Refusal("source_copy_unknown")
         if source["kind"] == "backblaze":
             from fm_data_archive.archive_cli import _read_store
-            from fm_data_archive.core.source import validate_receipt
-            key = copies[0].get("receipt")
-            if not isinstance(key, str) or not key.startswith("receipts/imports/"):
-                raise Refusal("source_receipt_required")
-            receipt = validate_receipt(json.loads(_read_store().get_bytes(key)))
+            receipt = _archive_receipt(item, copies[0], _read_store())
             manifest = receipt["manifest"]
-            if (manifest["producer_id"], manifest["source_id"]) != (item["producer_id"], item["source_id"]) or (
-                    copies[0].get("revision") is not None and copies[0]["revision"] != manifest["revision"]):
-                raise Refusal("receipt_identity_mismatch")
             rows.append({"id": identity, "manifest": manifest, "receipt": receipt})
         else:
             _, manifest = _source(config, item, source)
             rows.append({"id": identity, "manifest": manifest})
-    plan = {"contract_version": 1, "configuration_digest": _digest(config), "revision": args.revision,
+    remote_digest = None
+    needed, available = 0, None
+    for row in rows:
+        manifest = row["manifest"]
+        if destination.get("ssh_host"):
+            from fm_tools.archive_transfer import remote
+            prepared = remote(destination["ssh_host"], ["copy", "receiver"], {
+                "action": "prepare", "location": destination.get("remote_location", destination["id"]), "manifest": manifest})
+            if remote_digest is not None and remote_digest != prepared["configuration_digest"]:
+                raise Refusal("destination_configuration_changed")
+            remote_digest = prepared["configuration_digest"]
+        elif destination["kind"] != "backblaze":
+            from fm_data_archive.core.source import _safe_path, receive_source
+            target = _safe_path(Path(destination["root"]), "copies/" + manifest["producer_id"] + "/" + manifest["revision"])
+            prepared = receive_source(target, manifest, finish=False)
+        else:
+            prepared = {"expected_new_bytes": sum(member["size"] for member in manifest["files"]), "free_bytes": None}
+        needed += prepared["expected_new_bytes"]
+        if prepared["free_bytes"] is not None:
+            available = prepared["free_bytes"] if available is None else min(available, prepared["free_bytes"])
+        row["destination_outcome"] = prepared.get("outcome", "cloud_preflight_at_start")
+    if available is not None and needed > available:
+        raise Refusal("insufficient_space_for_selection")
+    temporary = sum(member["size"] for row in rows for member in row["manifest"]["files"]) if source.get("ssh_host") or source["kind"] == "backblaze" and destination.get("ssh_host") else 0
+    if temporary:
+        import shutil
+        if shutil.disk_usage(state).free < temporary + (needed if not destination.get("ssh_host") and destination["kind"] != "backblaze" else 0):
+            raise Refusal("insufficient_relay_space")
+    plan = {"expected_new_bytes": needed, "temporary_bytes": temporary, "remote_configuration_digest": remote_digest, "contract_version": 1, "configuration_digest": _digest(config), "revision": args.revision,
             "source": source["id"], "destination": destination["id"], "items": rows,
             "created_at": int(time.time()), "expires_at": int(time.time()) + 86400}
+    if len(json.dumps(plan).encode()) > 64 * 1024 * 1024:
+        raise Refusal("plan_too_large_use_smaller_selection")
     plan["id"] = _digest(plan)
     directory = state / "plans"
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -417,8 +502,11 @@ def _plan_summary(plan: dict) -> dict:
     return {key: plan[key] for key in ("id", "revision", "source", "destination", "expires_at")} | {
         "items": [{"id": row["id"], "revision": row["manifest"]["revision"],
                    "members": len(row["manifest"]["files"]),
-                   "bytes": sum(member["size"] for member in row["manifest"]["files"])} for row in plan["items"]],
+                   "bytes": sum(member["size"] for member in row["manifest"]["files"]),
+                   "destination_outcome": row.get("destination_outcome")} for row in plan["items"]],
         "verification": "full_sha256", "removes_source": False,
+        "route": "verified tower relay" if plan.get("remote_configuration_digest") or plan["destination"] == "operator-download" else "coordinator copy",
+        "expected_new_bytes": plan.get("expected_new_bytes"), "temporary_bytes": plan.get("temporary_bytes"),
         "cost": "unknown; upload readback and restore each transfer the selected bytes"}
 
 
@@ -526,6 +614,14 @@ def run_copy(plan_id: str, configuration_digest: str, checkpoint: Callable[[], N
                                         policy=policy, checkpoint=checkpoint, members=members)
                 receipt_key = f"receipts/imports/{manifest['producer_id']}__{manifest['revision']}.json"
                 result = {"outcome": "archived", "receipt": receipt_key, "receipt_digest": receipt["receipt_digest"]}
+            elif destination.get("ssh_host"):
+                from fm_tools.archive_transfer import push
+                if source["kind"] == "backblaze":
+                    root = state / "restore-relay" / manifest["producer_id"] / manifest["revision"]
+                    restore_source(row["receipt"], _read_store(), root, checkpoint=checkpoint)
+                result = push(destination, root, manifest, state, plan["remote_configuration_digest"], checkpoint)
+                receipt_key = None
+                relative = "copies/" + manifest["producer_id"] + "/" + manifest["revision"]
             else:
                 from fm_data_archive.core.source import _safe_path
                 relative = "copies/" + manifest["producer_id"] + "/" + manifest["revision"]
@@ -538,7 +634,7 @@ def run_copy(plan_id: str, configuration_digest: str, checkpoint: Callable[[], N
             library.scan(destination, [{**item, "revision": manifest["revision"], "receipt": receipt_key,
                                        "verification": "full_sha256", "finalized": True,
                                        "bytes": sum(member["size"] for member in manifest["files"]),
-                                       "member_count": len(manifest["files"])}], coverage="partial")
+                                       "member_count": len(manifest["files"])}], coverage="partial", update_only=True)
             if destination["kind"] != "backblaze":
                 library.bind_copy(row["id"], destination["id"], manifest, relative)
             results.append({"id": row["id"], **result})
@@ -551,6 +647,9 @@ def run_copy(plan_id: str, configuration_digest: str, checkpoint: Callable[[], N
 
 
 def execute(args: argparse.Namespace) -> dict:
+    if args.group == "copy" and args.operation == "download":
+        from fm_tools.archive_transfer import download
+        return download(args)
     card, config = configuration()
     data_package(card.workspace)
     from fm_data_archive.core.library import Library
@@ -563,7 +662,60 @@ def execute(args: argparse.Namespace) -> dict:
         raise Refusal("state_must_be_private")
     library = Library(state / "library.sqlite3")
     try:
-        if args.group == "library" and args.operation == "files":
+        if args.selection:
+            if args.item or not re.fullmatch(r"[0-9a-f]{64}", args.selection):
+                raise Refusal("invalid_selection")
+            saved = _read_json(state / "selections" / (args.selection + ".json"))
+            if _digest(saved) != args.selection or saved["revision"] != args.revision:
+                raise Refusal("selection_changed")
+            args.item = saved["items"]
+        if args.group == "library" and args.operation == "select":
+            if args.revision is None:
+                raise Refusal("revision_required")
+            items, offset = [], 0
+            while True:
+                page = library.list(limit=500, offset=offset, revision=args.revision, query=" ".join(args.arguments),
+                                    **{key: getattr(args, key) for key in ("location", "folder", "collection", "kind", "format", "producer", "task", "recorded_from", "recorded_to", "copy_state")})
+                if page["total"] > 10_000:
+                    raise Refusal("selection_limit_use_filters")
+                items.extend(row["id"] for row in page["items"])
+                if page["next_offset"] is None:
+                    break
+                offset = page["next_offset"]
+            saved = {"revision": args.revision, "items": items}
+            identity = _digest(saved)
+            (state / "selections").mkdir(mode=0o700, exist_ok=True)
+            _atomic(state / "selections" / (identity + ".json"), saved)
+            return {"id": identity, "count": len(items), **saved}
+        if args.group == "copy" and args.operation == "export":
+            if len(args.arguments) != 1:
+                raise Refusal("plan_required")
+            plan = _load_plan(state, args.arguments[0], config)
+            if plan["destination"] != "operator-download":
+                raise Refusal("not_download_plan")
+            result = _read_json(state / "plans" / (plan["id"] + ".result.json"), maximum=64 * 1024 * 1024)
+            if result.get("complete") is not True:
+                raise Refusal("download_not_ready")
+            from fm_data_archive.core.source import _safe_path, freeze_source
+            items = []
+            for row in plan["items"]:
+                manifest = row["manifest"]
+                root = _safe_path(state / "downloads", "copies/" + manifest["producer_id"] + "/" + manifest["revision"])
+                if freeze_source(root, **{key: manifest[key] for key in ("producer_id", "source_id", "format")}) != manifest:
+                    raise Refusal("export_changed")
+                items.append({"id": row["id"], "root": str(root), "manifest": manifest})
+            return {"items": items, "plan_id": plan["id"]}
+        if args.group == "copy" and args.operation == "receiver":
+            from fm_tools.archive_transfer import receive
+            raw = sys.stdin.buffer.read(64 * 1024 * 1024 + 1)
+            if len(raw) > 64 * 1024 * 1024:
+                raise Refusal("request_too_large")
+            return receive(config, library, json.loads(raw))
+        if args.group == "library" and args.operation == "history":
+            if len(args.arguments) != 1:
+                raise Refusal("item_required")
+            return library.history(args.arguments[0], limit=args.limit, offset=args.offset)
+        if args.group == "library" and args.operation in {"files", "preview"}:
             if len(args.arguments) != 1 or not args.location or not 1 <= args.limit <= 500 or args.offset < 0:
                 raise Refusal("invalid_file_selection")
             item = library.show(args.arguments[0])
@@ -572,6 +724,22 @@ def execute(args: argparse.Namespace) -> dict:
             if copy is None:
                 raise Refusal("copy_unknown")
             binding = library.local_copy(item["id"], location["id"])
+            if args.operation == "preview":
+                if not args.member:
+                    raise Refusal("member_required")
+                if binding is not None and not location.get("ssh_host"):
+                    from fm_tools.archive_probe import preview_file
+                    from fm_data_archive.core.source import _safe_path
+                    if not any(row["path"] == args.member for row in binding["manifest"]["files"]):
+                        raise Refusal("member_unknown")
+                    return preview_file(_safe_path(_safe_path(Path(location["root"]), binding["relative_path"]), args.member))
+                if location.get("ssh_host") and location.get("adapter") == "imports":
+                    from fm_tools.archive_transfer import remote
+                    return remote(location["ssh_host"], ["copy", "receiver"], {"action": "preview",
+                        "location": location.get("remote_location", location["id"]), "item": item["id"], "member": args.member})
+                if location["kind"] == "backblaze":
+                    raise Refusal("preview_requires_verified_download")
+                return inventory(location, source=item["source_id"], relative=copy.get("relative_path") or "", preview_member=args.member)
             if binding is not None:
                 rows = binding["manifest"]["files"]
                 return {"files": rows[args.offset:args.offset + args.limit], "total": len(rows), "evidence": "saved_manifest",
@@ -602,6 +770,29 @@ def execute(args: argparse.Namespace) -> dict:
             return inventory(location, source=item["source_id"], relative=copy.get("relative_path") or "",
                              file_page=(args.offset, args.limit))
         if args.group == "copy":
+            if args.operation == "verify":
+                if len(args.arguments) != 1 or not args.location or not args.full:
+                    raise Refusal("full_copy_selection_required")
+                item = library.show(args.arguments[0])
+                location = _location(config, args.location)
+                copy = next((row for row in item["copies"] if row["location_id"] == location["id"]), None)
+                if copy is None or (location["kind"] != "backblaze" and not copy.get("revision")):
+                    raise Refusal("managed_copy_required")
+                if location["kind"] == "backblaze":
+                    from fm_data_archive.archive_cli import _read_store
+                    from fm_data_archive.core.verify import verify_upload_objects
+                    store = _read_store()
+                    receipt = _archive_receipt(item, copy, store)
+                    manifest = receipt["manifest"]
+                    proof = verify_upload_objects(store, receipt["objects"], full_bytes=True)
+                    if not proof.ok:
+                        raise Refusal("copy_verification_failed")
+                else:
+                    _, manifest = _source(config, item, location)
+                    if manifest["revision"] != copy["revision"]:
+                        raise Refusal("copy_changed")
+                library.scan(location, [{**item, **copy, "revision": manifest["revision"], "verification": "full_sha256"}], coverage="partial", update_only=True)
+                return {"item": item["id"], "location": location["id"], "verification": "full_sha256"}
             if args.operation == "plan":
                 return copy_plan(args, config, library, state)
             if args.operation not in {"show", "start"} or len(args.arguments) != 1:
@@ -625,6 +816,10 @@ def execute(args: argparse.Namespace) -> dict:
                         if path.is_dir() and not path.is_symlink() and (path / "status.json").is_file():
                             row = data_jobs.status(argparse.Namespace(job_root=root, request_id=path.name))
                             if row["operation"] == "archive_copy":
+                                request = _read_json(path / "request.json")
+                                plan_id = request["parameters"]["plan_id"]
+                                saved_plan = _read_json(state / "plans" / (plan_id + ".json"), maximum=64 * 1024 * 1024)
+                                row.update(plan_id=plan_id, destination=saved_plan["destination"])
                                 jobs.append(row)
                 if not 1 <= args.limit <= 500 or args.offset < 0:
                     raise Refusal("invalid_page")
@@ -696,6 +891,8 @@ def execute(args: argparse.Namespace) -> dict:
                                 kind=args.kind, format=args.format, producer=args.producer, task=args.task,
                                 recorded_from=args.recorded_from, recorded_to=args.recorded_to,
                                 copy_state=args.copy_state, revision=args.revision)
+            result["locations"] = [row for row in result["locations"] if row["id"] != "operator-download"]
+            result["locations"].append({key: value for key, value in _location(config, "operator-download").items() if key != "root"} | {"coverage": "client_destination"})
             known = {row["id"] for row in result["locations"]}
             result["locations"] += [{key: row[key] for key in ("id", "name", "kind", "capabilities") if key in row}
                                      | {"coverage": "not_scanned", "checked_at": None, "last_complete_at": None}
@@ -743,7 +940,7 @@ def main(argv: list[str] | None = None) -> int:
                 "request_id": args.request_id}
     try:
         result = {**envelope, "ok": True, "data": execute(args)}
-        code = 0
+        code = 3 if args.group == "jobs" and args.operation == "wait" and result["data"].get("state") != "completed" else 0
     except ImportError:
         result = {**envelope, "ok": False, "error_code": "archive_dependencies_missing"}
         code = 3

@@ -7,6 +7,7 @@ hashes finalized media. No operation changes source files.
 from __future__ import annotations
 
 import json
+import base64
 import hashlib
 import os
 import stat
@@ -207,7 +208,7 @@ def freeze(root: str, adapter: str, producer: str, source: str, relative: str = 
     return {"manifest": manifest, "relative": directory.relative_to(base).as_posix()}
 
 
-def files(root: str, adapter: str, producer: str, source: str, relative: str = "", offset: int = 0, limit: int = 100) -> dict:
+def files(root: str, adapter: str, producer: str, source: str, relative: str = "", offset: int = 0, limit: int = 100, preview_member: str | None = None) -> dict:
     if not 1 <= limit <= 500 or offset < 0:
         raise ValueError("invalid_page")
     base = Path(root)
@@ -246,13 +247,46 @@ def files(root: str, adapter: str, producer: str, source: str, relative: str = "
             rows.append({"path": name, "size": details.st_size})
         elif not stat.S_ISDIR(details.st_mode):
             raise ValueError("unsupported_member")
+    if preview_member is not None:
+        if not any(row["path"] == preview_member for row in rows):
+            raise ValueError("member_unknown")
+        return preview_file(safe(directory, preview_member))
     return {"files": rows[offset:offset + limit], "total": len(rows),
             "next_offset": offset + limit if offset + limit < len(rows) else None, "evidence": "source_metadata"}
+
+
+TEXT_SUFFIXES = {".json", ".jsonl", ".yaml", ".yml", ".txt", ".md", ".csv", ".log"}
+MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".mp4": "video/mp4", ".mov": "video/quicktime"}
+
+
+def preview_file(path: Path) -> dict:
+    """Read an explicit bounded preview; never decode a recording implicitly."""
+    suffix = path.suffix.lower()
+    if suffix not in TEXT_SUFFIXES | MEDIA_TYPES.keys():
+        raise ValueError("preview_unavailable")
+    maximum = 65536 if suffix in TEXT_SUFFIXES else 8 * 1024 * 1024
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        raise ValueError("symlink_refused")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+        details = os.fstat(stream.fileno())
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError("unsupported_member")
+        if suffix in MEDIA_TYPES and details.st_size > maximum:
+            raise ValueError("preview_requires_verified_download")
+        raw = stream.read(maximum + 1)
+    result = {"member": path.name, "bytes": details.st_size, "truncated": len(raw) > maximum}
+    if suffix in TEXT_SUFFIXES:
+        return {**result, "text": raw[:maximum].decode("utf-8", errors="replace"), "media_type": "text/plain"}
+    return {**result, "base64": base64.b64encode(raw).decode(), "media_type": MEDIA_TYPES[suffix]}
+
+
+def preview(root: str, adapter: str, producer: str, source: str, relative: str = "", *, member: str) -> dict:
+    return files(root, adapter, producer, source, relative, preview_member=member)
 
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     operation = request.pop("operation", "scan")
-    if operation not in {"scan", "freeze", "files"}:
+    if operation not in {"scan", "freeze", "files", "preview"}:
         raise SystemExit("unsupported_operation")
-    print(json.dumps({"scan": scan, "freeze": freeze, "files": files}[operation](**request)))
+    print(json.dumps({"scan": scan, "freeze": freeze, "files": files, "preview": preview}[operation](**request)))
