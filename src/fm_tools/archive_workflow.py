@@ -144,7 +144,8 @@ def refresh(library: object, location: dict) -> dict:
                 for binding in library.local_copies(location["id"]):
                     if _safe_path(Path(location["root"]), binding["relative_path"]).is_dir():
                         item = library.show(binding["item_id"])
-                        result["items"].append({**item, "revision": binding["manifest"]["revision"],
+                        copy = next(row for row in item["copies"] if row["location_id"] == location["id"])
+                        result["items"].append({**item, **copy, "revision": binding["manifest"]["revision"],
                                                 "relative_path": binding["relative_path"]})
             return library.scan(location, result["items"], coverage=result["coverage"])
         except PermissionError:
@@ -791,7 +792,8 @@ def execute(args: argparse.Namespace) -> dict:
                     _, manifest = _source(config, item, location)
                     if manifest["revision"] != copy["revision"]:
                         raise Refusal("copy_changed")
-                library.scan(location, [{**item, **copy, "revision": manifest["revision"], "verification": "full_sha256"}], coverage="partial", update_only=True)
+                library.scan(location, [{**item, **copy, "revision": manifest["revision"], "verification": "full_sha256",
+                                         "verified_at": time.time()}], coverage="partial", update_only=True)
                 return {"item": item["id"], "location": location["id"], "verification": "full_sha256"}
             if args.operation == "plan":
                 return copy_plan(args, config, library, state)
