@@ -17,10 +17,12 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Callable
 
 from fm_tools.data_refine import SCHEMA_VERSION, _canonical, _digest
 from fm_tools.intake_probe import NAME, _sha256
@@ -83,6 +85,49 @@ def _freeze(root: Path) -> None:
         path.chmod(0o555 if path.is_dir() else 0o444)
 
 
+def copy_members(host: str | None, origin: str, staging: Path, listing: Path, members: list[str],
+                 *, checkpoint: Callable[[], None] | None = None) -> None:
+    """Use the intake transport for one exact, validated member list."""
+    if host is not None and not HOST.fullmatch(host):
+        raise ValueError("invalid source host")
+    if not Path(origin).is_absolute() or ".." in Path(origin).parts:
+        raise ValueError("invalid source root")
+    if any(not name or Path(name).is_absolute() or ".." in name.split("/") or "\\" in name
+           or any(ord(char) < 32 for char in name) for name in members):
+        raise ValueError("invalid source member")
+    listing.write_text("".join(name + "\n" for name in members))
+    command = ["rsync", "-rtc", "--partial", "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=", f"--files-from={listing}"]
+    if host is not None:
+        command += ["-e", shlex.join(SSH), f"{host}:{shlex.quote(origin)}"]
+    else:
+        command.append(origin)
+    if checkpoint is None:
+        returncode = subprocess.run([*command, f"{staging}/"], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, check=False).returncode
+    else:
+        checkpoint()
+        with subprocess.Popen([*command, f"{staging}/"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, start_new_session=True) as child:
+            try:
+                while True:
+                    checkpoint()
+                    try:
+                        returncode = child.wait(timeout=0.25)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait()
+    if returncode:
+        raise ValueError("transfer interrupted; rerun to resume")
+
+
 def _write_receipt(path: Path, digest: str, identity: dict, host: str | None, root: str, session: str,
                    selected: list[dict], refused: list[dict]) -> None:
     """Write the receipt once; a rerun after promotion completes a receipt that a crash left out."""
@@ -108,7 +153,7 @@ def _write_receipt(path: Path, digest: str, identity: dict, host: str | None, ro
     temporary.replace(path)
 
 
-def transfer(args: argparse.Namespace) -> dict:
+def transfer(args: argparse.Namespace, *, checkpoint: Callable[[], None] | None = None) -> dict:
     host, root = _source(args)
     if bool(args.episodes) == bool(args.all_finalized):
         raise ValueError("name episodes with --episode or pass --all-finalized, not both")
@@ -155,17 +200,8 @@ def transfer(args: argparse.Namespace) -> dict:
         if shutil.disk_usage(session_dir).free < needed + (1 << 30):
             raise ValueError(f"insufficient space: {needed} bytes still to copy plus a 1 GiB margin")
         listing = session_dir / f".partial-{digest}.files"
-        listing.write_text("".join(item["path"] + "\n" for item in files))
         origin = f"{root}/{args.session}/"
-        command = ["rsync", "-a", "--partial", f"--files-from={listing}"]
-        if host is not None:
-            command += ["-e", shlex.join(SSH), f"{host}:{origin}"]
-        else:
-            command.append(origin)
-        # Never --delete: the copy only adds bytes to its own staging directory.
-        result = subprocess.run([*command, f"{staging}/"], capture_output=True, text=True, check=False)
-        if result.returncode:
-            raise ValueError(f"transfer interrupted; rerun to resume: {result.stderr.strip()[-600:]}")
+        copy_members(host, origin, staging, listing, [item["path"] for item in files], checkpoint=checkpoint)
 
         if _local_files(staging) != sorted(item["path"] for item in files):
             raise ValueError("staging membership differs from the frozen inventory")

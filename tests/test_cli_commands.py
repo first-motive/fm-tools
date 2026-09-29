@@ -419,7 +419,7 @@ def test_phase3_handoff_binds_full_consumer_result_but_blocks_unproved_training(
 
 def test_phase3_job_replay_rejects_changed_request(tmp_path, monkeypatch):
     from argparse import Namespace
-    from fm_tools.data_jobs import status, submit, worker
+    from fm_tools.data_jobs import resume, status, submit, worker
 
     class Worker:
         pid = __import__("os").getpid()
@@ -454,6 +454,104 @@ def test_phase3_job_replay_rejects_changed_request(tmp_path, monkeypatch):
     (job / "cancel").touch()
     worker(job)
     assert status(Namespace(job_root=args.job_root, request_id="p3-check"))["state"] == "cancelled"
+    (job / "pause").touch()
+    (job / "cancel").unlink()
+    worker(job)
+    assert status(Namespace(job_root=args.job_root, request_id="p3-check"))["state"] == "paused"
+    resumed = resume(Namespace(job_root=args.job_root, request_id="p3-check"))
+    assert resumed["state"] == "queued"
+    assert not (job / "pause").exists()
+    assert json.loads((job / "request.json").read_text())["parameters"]["output_root"] == str(tmp_path / "output_root")
+
+
+def test_archive_inventory_keeps_unknown_formats_and_refuses_symlinks(tmp_path):
+    import pytest
+    from fm_tools.archive_probe import files, freeze, scan
+
+    dataset = tmp_path / "datasets" / "shared"
+    (dataset / "meta").mkdir(parents=True)
+    (dataset / "meta" / "info.json").write_text('{"codebase_version":"v9.0"}')
+    result = scan(str(tmp_path), "lerobot", "robot-a")
+    assert result["items"][0]["format"] == "lerobot-v9.0"
+    assert result["items"][0]["source_id"] == "datasets/shared"
+    page = files(str(tmp_path), "lerobot", "robot-a", "datasets/shared", limit=1)
+    assert page["files"][0]["path"] == "meta/info.json" and page["total"] == 1
+    assert "sha256" not in page["files"][0], "browsing must not claim a content check"
+    (tmp_path / "escape").symlink_to(dataset, target_is_directory=True)
+    result = scan(str(tmp_path), "lerobot", "robot-a")
+    assert result["coverage"] == "partial"
+    assert len(result["items"]) == 1
+    (dataset / "meta" / "info.json").write_text('{"codebase_version":"v3.0"}')
+    for path in [*dataset.rglob("*"), dataset]:
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    manifest = freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")["manifest"]
+    assert manifest["format"] == "lerobot-v3.0"
+    assert [row["path"] for row in manifest["files"]] == ["meta/info.json"]
+    dataset.chmod(0o755)
+    with pytest.raises(ValueError, match="source_not_frozen"):
+        freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")
+    from fm_tools.data_refine import _digest, _inventory
+    inventory = _inventory(dataset)
+    receipt = {"schema_version": 1, "kind": "robot_recording_conversion",
+               "dataset_valid": "passed (smoke read only; not training readiness)",
+               "files": inventory, "content_digest": _digest(inventory)}
+    (dataset.parent / "conversion.json").write_text(json.dumps(receipt))
+    assert freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")["manifest"] == manifest
+    receipt["files"][0]["sha256"] = "0" * 64
+    (dataset.parent / "conversion.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="source_changed"):
+        freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")
+
+
+def test_archive_probe_bounds_remote_output():
+    import sys
+    import pytest
+    from fm_tools.archive_workflow import _probe_process
+
+    assert _probe_process([sys.executable, "-"], b"print('{}')", timeout=2, maximum=128) == b"{}\n"
+    for channel in ("stdout", "stderr"):
+        script = f"import sys; sys.{channel}.write('x' * 10000)".encode()
+        with pytest.raises(ValueError, match="source_output_limit"):
+            _probe_process([sys.executable, "-"], script, timeout=2, maximum=128)
+
+
+def test_archive_evidence_requires_a_published_read_only_set(tmp_path):
+    import pytest
+    from fm_tools.archive_probe import scan, freeze, files
+
+    evidence = tmp_path / "review"
+    evidence.mkdir()
+    (evidence / "approval.json").write_text('{"source_digest":"source","review_digest":"review"}')
+    assert scan(str(evidence), "evidence", "processor")["items"][0]["source_id"] == "review"
+    with pytest.raises(ValueError, match="source_not_frozen"):
+        freeze(str(evidence), "evidence", "processor", "review")
+    (evidence / "approval.json").chmod(0o444)
+    evidence.chmod(0o555)
+    result = freeze(str(evidence), "evidence", "processor", "review")
+    assert result["manifest"]["format"] == "evidence-v1"
+    assert result["manifest"]["files"][0]["path"] == "approval.json"
+    assert files(str(evidence), "evidence", "processor", "review")["total"] == 1
+
+
+def test_archive_intake_cancellation_waits_for_transport_exit(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import pytest
+    from fm_tools.data_intake import copy_members
+
+    processes = []
+    start = subprocess.Popen
+    def transport(*args, **kwargs):
+        child = start([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        processes.append(child)
+        return child
+    monkeypatch.setattr(subprocess, "Popen", transport)
+    def cancelled():
+        if processes:
+            raise ValueError("job_cancelled")
+    with pytest.raises(ValueError, match="job_cancelled"):
+        copy_members(None, str(tmp_path) + "/", tmp_path / "staging", tmp_path / "members", [], checkpoint=cancelled)
+    assert processes and processes[0].poll() is not None, "cancel must await transport shutdown"
 
 
 def test_phase3_split_plan_keeps_related_episodes_together(tmp_path):
@@ -539,10 +637,15 @@ def test_transfer_copies_only_finalized_takes_and_resumes_an_interrupted_copy(tm
     files = [{key: item[key] for key in ("path", "bytes", "sha256")}
              for item in [*frozen["session_files"], *(f for e in frozen["episodes"] for f in e["files"])]]
     digest = _digest({"schema_version": 1, "kind": "robot_recording_intake", "session": "can", "files": files})
-    # An interrupted copy leaves a truncated file in staging; the rerun must finish it, not trust it.
+    # A damaged partial can have the original size and timestamp. Retry must
+    # compare bytes, not accept rsync's size-and-time shortcut.
     partial = tmp_path / "intake" / "can" / f".partial-{digest}" / "0002"
     partial.mkdir(parents=True)
-    (partial / "0002_0.mcap").write_bytes(MCAP_MAGIC + b"sec")
+    import os
+    original = session / "0002" / "0002_0.mcap"
+    damaged = partial / "0002_0.mcap"
+    damaged.write_bytes(b"x" * original.stat().st_size)
+    os.utime(damaged, ns=(original.stat().st_atime_ns, original.stat().st_mtime_ns))
 
     assert _transfer(tmp_path, "--all-finalized") == 0
     result = json.loads(capsys.readouterr().out)["data"]
