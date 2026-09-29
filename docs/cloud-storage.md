@@ -1,5 +1,9 @@
 # Cloud Storage Coordinator
 
+![Cloud Storage ownership and copy path](diagrams/cloud-storage.svg)
+
+Source: [cloud-storage.d2](diagrams/cloud-storage.d2).
+
 `fm archive` remains registered by fm-ros2. Its `library`, `copy`, and `jobs`
 groups call this package through the Data archive wrapper. The wrapper uses
 the existing service credential route. Flat archive verbs and `data-archive`
