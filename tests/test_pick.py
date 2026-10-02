@@ -126,7 +126,8 @@ async def test_fm_repository_report_is_a_table(tmp_path, monkeypatch):
         await pilot.press(*"repositories", "down", "enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        text = [l.text for l in app.screen.query_one(RichLog).lines if l.text.strip()]
+        lines = app.screen.query_one(RichLog).lines
+        text = [line.text for line in lines if line.text.strip()]
         assert text[0].split() == ["repo", "directory", "entry", "points"]
         assert any(line.split()[:1] == [REPOS[0].name] for line in text), (
             "Each repository must be one table row, not key: value lines"
