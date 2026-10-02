@@ -207,6 +207,19 @@ def download(args) -> dict:
         return receipt
 
 
+def _shared_connection() -> list[str]:
+    """SSH options that reuse one private connection for five minutes.
+
+    Desktop sends one request per click, and each new login costs about half a
+    second. The socket name matches fm_ros2's `archive.sh`, so both routes share
+    one master. A dead master is replaced by a fresh login.
+    """
+    directory = Path.home() / ".ssh"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    return ["-o", "ControlMaster=auto", "-o", "ControlPersist=300",
+            "-o", f"ControlPath={directory}/fm-archive-%C"]
+
+
 def client_archive(arguments: list[str]) -> int:
     """Client-only forwarding; never register a competing archive authority."""
     import subprocess
@@ -218,4 +231,5 @@ def client_archive(arguments: list[str]) -> int:
     if len(arguments) < 4 or arguments[0] != "--host" or not HOST.fullmatch(arguments[1]) or arguments[2] not in {"library", "copy", "jobs"}:
         print(json.dumps({"contract_version": 1, "ok": False, "error_code": "client_requires_coordinator_host"}))
         return 3
-    return subprocess.run([*SSH, "--", arguments[1], shlex.join(["fm", "archive", *arguments[2:]])], check=False).returncode
+    return subprocess.run([*SSH, *_shared_connection(), "--", arguments[1],
+                           shlex.join(["fm", "archive", *arguments[2:]])], check=False).returncode
