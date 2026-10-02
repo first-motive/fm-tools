@@ -40,6 +40,14 @@ backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)
 
 ## The `fm` CLI
 
+Run `fm` with no arguments in a terminal to open the First Motive task menu.
+Search commands, inspect workspace reports, or review and run an action. The
+terminal logo uses the approved mark without text below it. Direct commands
+such as `fm status --json` keep their existing behavior.
+
+See the [terminal interface guide](src/fm_tools/tui/README.md) for controls,
+terminal support, and verification, or the [TUI plan](docs/tui-plan.md) for scope.
+
 The [Cloud Storage coordinator](docs/cloud-storage.md) provides the shared
 library, organisation, and verified copy jobs behind `fm archive`.
 

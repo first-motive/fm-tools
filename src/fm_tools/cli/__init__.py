@@ -35,6 +35,7 @@ one an agent should read instead of ``--help`` prose (see
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from rich.console import Console
@@ -347,6 +348,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_data_refine(argv[1:])
 
     discovery = discover(root, reserved=BUILTIN_VERBS)
+
+    if not argv:
+        if sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
+            from fm_tools.tui.app import run_tui
+
+            return run_tui(root, discovery)
+        _build_parser(discovery.commands, version=version_line(root)).print_help()
+        return exits.USAGE
 
     if argv and argv[0] not in BUILTIN_VERBS and not argv[0].startswith("-"):
         from .dispatch import dispatch

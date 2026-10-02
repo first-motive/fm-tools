@@ -55,3 +55,11 @@ def test_status_is_identical_from_any_directory(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["status", "--json", "--no-fetch"])
     assert capsys.readouterr().out == from_deep
+
+
+def test_bare_fm_without_terminal_prints_help(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    assert main([]) == 2
+    output = capsys.readouterr()
+    assert "usage: fm" in output.out
+    assert "█" not in output.out

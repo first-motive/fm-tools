@@ -30,10 +30,8 @@ def test_list_json_is_valid_and_complete(capsys):
 
 
 def test_no_verb_is_a_usage_error():
-    # argparse exits 2 on a missing required subcommand.
-    with pytest.raises(SystemExit) as exc:
-        main([])
-    assert exc.value.code == 2
+    # A non-interactive invocation must never wait for terminal input.
+    assert main([]) == 2
 
 
 def test_unknown_verb_is_a_usage_error():
