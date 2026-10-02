@@ -19,6 +19,15 @@ children and return versioned JSON. Health checks and remote Git fetches require
 review. New repository commands appear automatically, with literal arguments
 parsed by `shlex`; shell expansion and pipes are not supported.
 
+A command's `fm.json` entry can name its task group with `"group"`: one of
+`workspace`, `device`, `data`, `robot`, `develop`, or `maintain`. Without it,
+`group()` in `app.py` guesses from the verb, and an unknown verb goes only to
+**Browse all commands**. An invalid group is a doctor problem; the verb stays
+mounted.
+
+Report lists show as tables that start at the first row. Health checks show a
+count for each level and list failures, then warnings, before passes.
+
 For terminal commands, `runner.py` waits until Textual has restored the terminal,
 then starts the same FM interpreter and installation. The child owns terminal
 input and signals. Press Enter after it exits to restore the prior menu and see

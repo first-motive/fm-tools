@@ -65,8 +65,9 @@ async def test_fm_home_search_report_and_back(tmp_path, monkeypatch):
     app = FmApp(tmp_path, Discovery({}, []))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        await pilot.press("slash")
+        # Typing from the menu starts a search; no character may be lost.
         await pilot.press(*"workspace root")
+        assert app.query_one("#search", Input).value == "workspace root"
         await pilot.press("down", "enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -78,6 +79,59 @@ async def test_fm_home_search_report_and_back(tmp_path, monkeypatch):
         await pilot.resize_terminal(110, 40)
         await pilot.press("escape")
         assert app.query_one("#search", Input).value == ""
+
+
+async def test_fm_search_ranks_verb_matches_first(tmp_path):
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.tui.app import FmApp
+
+    app = FmApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(100, 30)) as pilot:
+        # "doctor" is listed first and its help says "run"; the verb must lead.
+        await pilot.press(*"run")
+        assert app.menu_items[0]["verb"] == "run"
+
+
+async def test_fm_doctor_lists_failures_first_from_the_top(tmp_path, monkeypatch):
+    """Health checks run after one review, and failures lead the report."""
+    from textual.widgets import RichLog
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.tui.app import FmApp
+
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    app = FmApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press(*"health", "down", "enter")
+        assert app.screen.query_one("#run").has_focus, "Read-only review starts on Run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        log = app.screen.query_one(RichLog)
+        text = [line.text for line in log.lines]
+        assert "fail" in text[0] and "pass" in text[0], "First line summarises levels"
+        levels = [w for line in text for w in line.split()[:1] if w in ("fail", "pass")]
+        assert levels == sorted(levels), f"Failures must come before passes: {levels}"
+        assert log.scroll_y == 0, "A report must open at its first line"
+
+
+async def test_fm_repository_report_is_a_table(tmp_path, monkeypatch):
+    from textual.widgets import RichLog
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.cli.registry import REPOS
+    from fm_tools.tui.app import FmApp
+
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    app = FmApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press(*"repositories", "down", "enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        lines = app.screen.query_one(RichLog).lines
+        text = [line.text for line in lines if line.text.strip()]
+        assert text[0].split() == ["repo", "directory", "entry", "points"]
+        assert any(line.split()[:1] == [REPOS[0].name] for line in text), (
+            "Each repository must be one table row, not key: value lines"
+        )
 
 
 async def test_fm_update_cancel_has_no_side_effect(tmp_path):
