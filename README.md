@@ -749,3 +749,62 @@ See `CONTRIBUTING.md` for the branch, commit, and PR workflow.
 ## License
 
 Apache-2.0 — see `LICENSE`.
+
+### Remote robot-data review and handoff
+
+The processing host registers each existing P0 source and P1 report in
+`data/robot-data-processing/review-sources.json`. Each entry is a plain source
+ID with absolute `source_root`, `contract_dir`, and `report_dir` paths. These
+paths belong to the host configuration. Clients cannot send paths or create a
+registration. Use a separate entry for each policy report.
+
+```json
+{
+  "checkers-v1-act": {
+    "source_root": "/processor/datasets/checkers-v1",
+    "contract_dir": "/processor/contracts/checkers-v1",
+    "report_dir": "/processor/reports/REPORT_DIGEST"
+  }
+}
+```
+
+The paths above are examples. Use the host's actual frozen source and receipts.
+Opening a source checks the source hashes, report digest, membership and policy
+contract. Missing or changed evidence refuses the request.
+
+| Operation | Parameters and result |
+| --- | --- |
+| `review.sources` | No parameters. Lists registered source IDs and policy reports. |
+| `review.open` | `source_id`. Reads the saved draft or creates an all-hold draft. Returns source, report and profile digests, draft `review_id`, save `revision`, approval revision, episode lengths, decisions and the full report. |
+| `review.save` | `source_id`, current `review_id`, `expected_revision`, `decisions`. Each decision has `episode_index`, `decision`, `start`, `stop`, `reason`, `preview_id`, `source_outcome`, `retained_outcome`. Omitted episodes stay on hold. A stale save refuses with `stale_review`. |
+| `review.validate` | `source_id`, `review_id`. Runs the existing review validator. Validation does not approve. |
+| `review.approve` | The same IDs, `reviewer`, and boolean `human_attestation`. Requires exact-frame receipts and a person's explicit approval. |
+| `preview` | `source_id`, integer `episode`, `start`, `stop`, plus `request_id`. Submits an exact-frame job for `[start, stop)`. |
+| `preview.read` / `preview.frame` | `source_id`, `preview_id`; frame also needs a receipt `file_id`. Reads verified metadata or one PNG as base64, limited to 2 MiB. |
+| `derive` | `source_id`, `review_id`, `request_id`. Submits the existing reviewed derivative writer. Uses H.264 for portable encoding and records output video facts in the derivative receipt. |
+| `split` | Those IDs plus `artifact_id`, `assignments`. Each assignment has `output_episode_index`, `group_id`, `split`, `evidence`. Related groups cannot cross train/validation/test. |
+| `verify` | Those IDs plus derivative `artifact_id` and optional `split_id`. Checks the full consumer and writes a ready or blocked handoff. |
+| `review.artifacts` | `source_id`. Lists receipt-bound derivatives, splits and handoffs, with artifact IDs and receipt digests. |
+
+`preview`, `derive`, `split`, and `verify` use the existing durable job queue.
+Reconnect through `job.status` with the same request ID. Completed results
+include `artifact_id`; a replay cannot bind that request ID to different input.
+Cancel stops the child worker and prevents promotion of partial output.
+
+Drafts, approvals, derivatives, split plans, splits and handoffs use separate
+`remote-*` directories under `data/robot-data-processing`. Earlier evidence
+and source files stay unchanged. The `sources` result also supplies `take_ids`
+for each intake. Old Desktop clients can ignore these additive fields.
+
+Run the full synthetic route with real media and the installed consumer:
+
+```bash
+FM_PI05_TEST_PROJECT=/absolute/path/to/fm-policy TERM=xterm-256color \
+  uv run --extra dev pytest tests/test_cli_commands.py \
+  -k pi05_installed --basetemp=/tmp/fm-remote-review-proof
+```
+
+Use an empty scratch path for `--basetemp`; pytest replaces it. The check keeps
+`remote-review-evidence.json` with review, derivative, split and blocked handoff
+receipts. Synthetic attestation applies only to its generated frames. It does
+not approve a real dataset, prove an archive restore, or measure robot results.

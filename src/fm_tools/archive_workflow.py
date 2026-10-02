@@ -314,6 +314,11 @@ def _location(config: dict, identity: str) -> dict:
     return location
 
 
+def _capture_busy(rows: list[dict]) -> bool:
+    """An unfinalized take anywhere on the robot blocks copies; a session with no takes holds no capture."""
+    return any(not row["finalized"] and row.get("episodes", 1) for row in rows)
+
+
 def _source(config: dict, item: dict, location: dict) -> tuple[Path | None, dict]:
     from fm_data_archive.core.source import _safe_path, freeze_source
     from fm_data_archive.core.library import Library
@@ -334,7 +339,7 @@ def _source(config: dict, item: dict, location: dict) -> tuple[Path | None, dict
         from fm_data_archive.core.source import _digest as manifest_digest, validate_manifest
 
         coverage = inventory(location)
-        if coverage["coverage"] != "complete" or any(not row["finalized"] for row in coverage["items"]):
+        if coverage["coverage"] != "complete" or _capture_busy(coverage["items"]):
             raise Refusal("source_busy_or_unfinalized")
         frozen = probe(location.get("ssh_host"), location["root"], item["source_id"], None, hash_files=True)
         if not frozen["episodes"] or any(not row["finalized"] for row in frozen["episodes"]):
