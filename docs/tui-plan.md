@@ -1,7 +1,7 @@
 # Plan The FM Terminal Interface
 
 Status: the first release is implemented on `feat/fm-terminal-interface` for
-FM 0.22.0. The initial scope covers the launch logo, task menu, search, workspace
+FM 0.23.0. The initial scope covers the launch logo, task menu, search, workspace
 reports, reviewed update, and terminal execution of discovered commands.
 Stage 3 remains a follow-up based on use. The original plan follows, with the
 approved logo correction: no text below the mark.
