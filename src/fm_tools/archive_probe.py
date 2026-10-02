@@ -76,7 +76,7 @@ def scan(root: str, adapter: str, producer: str, exclude: list[str] | None = Non
                 episodes = [child for child in directory.iterdir() if child.name.isdigit()]
                 states = [json.loads(metadata(child / "metadata.json")).get("status") for child in episodes]
                 result["items"].append({"source_id": identity, "producer_id": producer, "name": directory.name,
-                                        "kind": "recording", "format": "anvil-mcap", "bytes": None,
+                                        "kind": "recording", "format": "anvil-mcap", "bytes": None, "episodes": len(states),
                                         "finalized": bool(states) and all(value in {"success", "failure"} for value in states)})
                 continue
             for index, child in enumerate(directory.iterdir()):

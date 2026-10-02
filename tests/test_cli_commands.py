@@ -504,6 +504,23 @@ def test_archive_inventory_keeps_unknown_formats_and_refuses_symlinks(tmp_path):
         freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")
 
 
+def test_archive_anvil_busy_guard_ignores_an_empty_session(tmp_path):
+    from fm_tools.archive_probe import scan
+    from fm_tools.archive_workflow import _capture_busy
+
+    robot = tmp_path / "recordings"
+    _take(robot / "cam-check", "0001")
+    (robot / "test").mkdir()
+    (robot / "test" / "metadata.json").write_text('{"version":1,"name":"test"}')
+    result = scan(str(robot), "anvil", "robot-a")
+    states = {item["source_id"]: item["finalized"] for item in result["items"]}
+    assert states == {"cam-check": True, "test": False}, "an empty session is not a copy candidate"
+    assert not _capture_busy(result["items"]), "a session with no takes must not block other copies"
+
+    _take(robot / "cam-check", "0002", status="in_progress")
+    assert _capture_busy(scan(str(robot), "anvil", "robot-a")["items"]), "an in-progress take must block copies"
+
+
 def test_archive_probe_bounds_remote_output():
     import sys
     import pytest
