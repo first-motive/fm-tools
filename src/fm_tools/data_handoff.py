@@ -7,7 +7,6 @@ import hashlib
 import importlib.metadata
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,27 +32,13 @@ def _receipt(path: Path, manifest: dict, report: dict) -> dict:
     return receipt
 
 
-def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expected: int, *, sample_only: bool = False) -> dict:
-    environment = os.environ.copy()
-    environment.update(UV_OFFLINE="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
-        str(Path(__file__).resolve().parents[1]), environment.get("PYTHONPATH", "")
-    )))
-    uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
-    request = {"dataset": str(dataset), "repo_id": repo_id,
-               "profile_id": profile_id, "expected_frames": expected, "sample_only": sample_only}
-    with tempfile.TemporaryDirectory(prefix="fm-p3-request-") as directory:
-        request_file = Path(directory) / "request.json"
-        request_file.write_bytes(_canonical(request))
-        result = subprocess.run(
-            [uv, "run", "--no-sync", "--project", str(project), "python", "-m",
-             "fm_tools.data_handoff", "--internal-verify", str(request_file)],
-            cwd=project, env=environment, text=True, capture_output=True, check=False,
-        )
-    if result.returncode:
-        detail = (result.stderr.strip().splitlines() or ["worker returned no detail"])[-1][-1600:]
-        raise ValueError(f"consumer verification failed: {detail}")
-    return json.loads(result.stdout)
+def _consumer(project: Path, dataset: Path, repo_id: str, profile_id: str, expected: int, *, sample_only: bool = False, cancel_file: Path | None = None) -> dict:
+    from fm_tools.data_derive import _run as run_worker
+    return run_worker(project, "--internal-verify", {
+        "dataset": str(dataset), "repo_id": repo_id, "profile_id": profile_id,
+        "expected_frames": expected, "sample_only": sample_only,
+        "cancel_file": str(cancel_file) if cancel_file else None,
+    }, module="fm_tools.data_handoff")
 
 
 def verify(args: argparse.Namespace) -> dict:
@@ -99,7 +84,8 @@ def verify(args: argparse.Namespace) -> dict:
     frame_count = split["splits"]["train"]["frames"] if split else (
         receipt["verification"]["frames"] if receipt else report["totals"]["frames"])
     first = _inventory(dataset)
-    verification = _consumer(project, dataset, dataset_id, report["profile_id"], frame_count)
+    verification = _consumer(project, dataset, dataset_id, report["profile_id"], frame_count,
+                             **({"cancel_file": args.cancel_file} if getattr(args, "cancel_file", None) else {}))
     if split and verification["dataset_statistics_sha256"] != split["splits"]["train"]["statistics_sha256"]:
         raise ValueError("training consumer loaded different train statistics")
     if _inventory(dataset) != first or (receipt and split is None and first != receipt["files"]):
@@ -146,6 +132,8 @@ def verify(args: argparse.Namespace) -> dict:
         with tempfile.TemporaryDirectory(prefix=".handoff-", dir=destination.parent) as temporary:
             staged = Path(temporary)
             (staged / "handoff.json").write_bytes(_canonical(handoff) + b"\n")
+            if getattr(args, "cancel_file", None) and args.cancel_file.exists():
+                raise ValueError("processing cancelled")
             staged.rename(destination)
         status = "completed"
     return {"status": status, "artifact": str(destination), "handoff_digest": key,

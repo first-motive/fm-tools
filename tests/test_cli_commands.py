@@ -1119,6 +1119,94 @@ stats.write_text(json.dumps(saved))
 split = _internal_split({"repo_id": args.repo_id, "dataset": str(args.source_root), "splits": {"train": [0], "test": [1]}, "output": str(root / "split"), "profile_id": args.profile})
 train_stats = json.loads((root / "split/train/meta/stats.json").read_text())
 assert max(train_stats["action"]["q99"]) < 10, train_stats["action"]
+# Exercise the production client/serve contract with real media and durable workers.
+import subprocess, time, os
+from fm_tools.data_assess import assess
+from fm_tools.data_refine import _inventory
+project = Path(sys.argv[2])
+contract = _contract(Namespace(source_root=root / "source", consumer_project=project,
+    repo_id=args.repo_id, state_root=root / "contracts", samples=[(0,"left")], profiles=["act-checkers-v1"]))
+report = assess(Namespace(source_root=root / "source", contract_dir=Path(contract["artifact"]),
+    state_root=root / "reports", consumer_project=project, profile="act-checkers-v1", anvil_report=None))
+base = root / "data/robot-data-processing"
+base.mkdir(parents=True)
+(base / "review-sources.json").write_text(json.dumps({"example": {"source_root": str(root / "source"),
+    "contract_dir": contract["artifact"], "report_dir": report["artifact"]}}))
+(root / "fm-policy").symlink_to(project, target_is_directory=True)
+card = root / "machine.json"
+card.write_text(json.dumps({"schema_version":1,"name":"fm-ws-99","role":"workstation",
+    "fleet":"test","transport":"zenoh","workspace":str(root)}))
+os.environ["FM_MACHINE_FILE"] = str(card)
+os.environ["XDG_STATE_HOME"] = str(root / "runtime-state")
+def call(operation, parameters=None, request_id=None, refused=False):
+    request = {"schema_version":1,"operation":operation}
+    if parameters is not None: request["parameters"] = parameters
+    if request_id: request["request_id"] = request_id
+    proc = subprocess.run([sys.executable,"-c",
+        "from fm_tools.data_refine import main; import sys; raise SystemExit(main(['remote','--host','local','--request',sys.argv[1]]))",
+        json.dumps(request)], capture_output=True, text=True)
+    value = json.loads(proc.stdout)
+    if refused is None: assert proc.returncode in {0, 3} and "data" in value, value
+    else: assert (proc.returncode != 0) == refused, value
+    return value if refused else value["data"]
+def wait(request_id):
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        value = call("job.status", request_id=request_id)
+        if value["state"] == "completed": return value["result"]
+        assert value["state"] in {"queued","running","verifying"}, value
+        time.sleep(.2)
+    raise AssertionError("worker did not finish")
+original = _inventory(root / "source")
+binding = {"source_id":"example"}
+opened = call("review.open", binding)
+assert all(row["decision"] == "hold" for row in opened["decisions"])
+decisions = []
+for row in opened["decisions"]:
+    parameters = {**binding,"episode":row["episode_index"],"start":0,"stop":4}
+    request_id = "preview-" + str(row["episode_index"])
+    call("preview", parameters, request_id)
+    preview = wait(request_id)
+    frames = call("preview.read", {**binding,"preview_id":preview["artifact_id"]})
+    assert frames["frames"] == [0,3]
+    image = call("preview.frame", {**binding,"preview_id":preview["artifact_id"],"file_id":frames["files"][0]["file_id"]})
+    assert image["png_base64"]
+    decisions.append({"episode_index":row["episode_index"],"decision":"include","start":0,"stop":4,
+        "reason":"synthetic media proof","preview_id":preview["artifact_id"],"source_outcome":"success","retained_outcome":"success"})
+save = {**binding,"review_id":opened["review_id"],"expected_revision":0,"decisions":decisions}
+saved_review = call("review.save", save)
+assert call("review.save", save, refused=True)["reason_code"] == "stale_review"
+binding["review_id"] = saved_review["review_id"]
+assert call("review.validate", binding)["approved"] is False
+assert call("review.approve", {**binding,"reviewer":"Runtime Operator","human_attestation":False}, refused=True)["state"] == "refused"
+# Synthetic operator attestation is limited to these generated frames.
+assert call("review.approve", {**binding,"reviewer":"Synthetic Runtime Operator","human_attestation":True})["training_ready"] is False
+call("derive", binding, "derive-proof")
+derivative = wait("derive-proof")
+assert call("derive", binding, "derive-proof")["state"] == "completed"
+assignments = [{"output_episode_index":0,"group_id":"layout-a","split":"train","evidence":"synthetic layout A"},
+               {"output_episode_index":1,"group_id":"layout-b","split":"test","evidence":"synthetic layout B"}]
+call("split", {**binding,"artifact_id":derivative["artifact_id"],"assignments":assignments}, "split-proof")
+split_result = wait("split-proof")
+call("verify", {**binding,"artifact_id":derivative["artifact_id"],"split_id":split_result["artifact_id"]}, "verify-proof")
+handoff = wait("verify-proof")
+assert handoff["consumer_verified"] and not handoff["training_ready"], handoff
+assert "cross_source_overlap_unproven" in handoff["limitations"]
+assert _inventory(root / "source") == original
+artifacts = call("review.artifacts", {"source_id":"example"})
+assert len(artifacts["derivatives"]) == len(artifacts["splits"]) == len(artifacts["handoffs"]) == 1
+call("preview", {"source_id":"example","episode":0,"start":1,"stop":4}, "cancel-proof")
+call("job.cancel", request_id="cancel-proof", refused=None)
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    cancelled = call("job.status", request_id="cancel-proof", refused=None)
+    if cancelled["state"] == "cancelled": break
+    assert cancelled["state"] in {"queued","running","verifying"}, cancelled
+    time.sleep(.2)
+assert cancelled["state"] == "cancelled" and cancelled["artifact"] is None, cancelled
+assert len(list((base / "remote-reviews").rglob("preview.json"))) == 2
+(root / "remote-review-evidence.json").write_text(json.dumps({"review":saved_review,
+    "derivative":derivative,"split":split_result,"handoff":handoff,"artifacts":artifacts,"cancelled_job":cancelled,"originals_unchanged":True}, indent=2))
 (root / "pi05-evidence.json").write_text(json.dumps({"consumer": result, "missing_quantile": missing, "split": split, "train_stats": train_stats}, indent=2))
 '''
     environment = os.environ.copy()
@@ -1210,3 +1298,56 @@ def test_archive_transport_retries_only_transient_failures(tmp_path, monkeypatch
     with pytest.raises(ValueError):
         copy_members(None, str(tmp_path) + '/', tmp_path / 'staging', tmp_path / 'list', [])
     assert outcomes == [0], 'permission and partial-file errors require an explicit correction'
+
+
+def test_remote_review_keeps_omitted_decisions_on_hold_and_refuses_stale_saves(tmp_path, monkeypatch, capsys):
+    from fm_tools.data_refine import _digest, _inventory
+    workspace = _processing_host(tmp_path, monkeypatch)
+    base = workspace / "data/robot-data-processing"
+    source = tmp_path / "dataset"
+    (source / "meta").mkdir(parents=True)
+    (source / "meta/info.json").write_text("{}")
+    files = _inventory(source)
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    manifest = {"schema_version": 1, "kind": "robot_data_source", "repo_id": "first-motive/example",
+                "content_digest": _digest(files), "files": files,
+                "dataset_info": {"features": {}, "fps": 30},
+                "source_map": [{"episode_index": 0, "row_start": 0, "row_stop": 3},
+                               {"episode_index": 1, "row_start": 3, "row_stop": 5}]}
+    (contract / "source.json").write_text(json.dumps(manifest))
+    (contract / "consumer.json").write_text(json.dumps({"schema_version": 1,
+        "source_digest": _digest(files), "profiles": {"act-checkers-v1": {"profile_digest": "profile"}}}))
+    report = {"schema_version": 1, "kind": "robot_data_report", "repo_id": manifest["repo_id"],
+              "source_digest": _digest(files), "profile_id": "act-checkers-v1", "profile_digest": "profile",
+              "policy_project_revision": "revision", "episodes": [{"episode_index": 0}, {"episode_index": 1}],
+              "findings": [], "totals": {"frames": 5}}
+    report_dir = tmp_path / _digest(report)
+    report_dir.mkdir()
+    (report_dir / "report.json").write_text(json.dumps(report))
+    base.mkdir(parents=True)
+    (base / "review-sources.json").write_text(json.dumps({"example": {
+        "source_root": str(source), "contract_dir": str(contract), "report_dir": str(report_dir)}}))
+    parameters = {"source_id": "example"}
+    assert _remote({"schema_version": 1, "operation": "review.open", "parameters": parameters}) == 0
+    opened = json.loads(capsys.readouterr().out)["data"]
+    assert [row["decision"] for row in opened["decisions"]] == ["hold", "hold"]
+    assert opened["revision"] == 0
+    edit = {"episode_index": 0, "decision": "exclude", "start": None, "stop": None,
+            "reason": "failed take", "preview_id": None, "source_outcome": "failure", "retained_outcome": "unknown"}
+    save = {**parameters, "review_id": opened["review_id"], "expected_revision": 0, "decisions": [edit]}
+    request = {"schema_version": 1, "operation": "review.save", "parameters": save}
+    assert _remote(request) == 0
+    saved = json.loads(capsys.readouterr().out)["data"]
+    assert saved["revision"] == 1 and saved["decisions"][1]["decision"] == "hold"
+    assert _remote(request) == 3
+    assert json.loads(capsys.readouterr().out)["reason_code"] == "stale_review"
+    assert _remote({"schema_version": 1, "operation": "review.approve", "parameters": {
+        **parameters, "review_id": saved["review_id"], "reviewer": "Matthew", "human_attestation": False}}) == 3
+    assert "human attestation" in json.loads(capsys.readouterr().out)["detail"]
+    for invalid in ({"source_id": "../escape"}, {**parameters, "source_root": "/etc"}):
+        assert _remote({"schema_version": 1, "operation": "review.open", "parameters": invalid}) == 3
+        capsys.readouterr()
+    (source / "meta/info.json").write_text('{"changed":true}')
+    assert _remote({"schema_version": 1, "operation": "review.open", "parameters": parameters}) == 3
+    assert "source identity differs" in json.loads(capsys.readouterr().out)["detail"]

@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 
 from fm_tools.data_refine import SCHEMA_VERSION, _canonical, _digest
+from fm_tools import data_remote_review
+from fm_tools.data_remote_review import Refused
 
 MAX_REQUEST_BYTES = 1024 * 1024
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -41,16 +43,11 @@ PARAMETERS = {
     "intent.outcome": {"device", "session_id", "episode_id", "outcome", "note", "author", "expected_revision"},
     "intent.list": {"device", "session_id"},
 }
-JOBS = {"transfer", "scan", "convert"}
+PARAMETERS.update(data_remote_review.PARAMETERS)
+JOBS = {"transfer", "scan", "convert"} | data_remote_review.JOBS
 OPERATIONS = set(PARAMETERS)
 # Result states a caller can wait on versus states that end the request.
 FINISHED_BAD = {"refused", "failed", "cancelled", "interrupted", "transport_failed"}
-
-
-class Refused(ValueError):
-    def __init__(self, reason_code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.reason_code = reason_code
 
 
 def roots(workspace: Path) -> dict[str, Path]:
@@ -60,6 +57,9 @@ def roots(workspace: Path) -> dict[str, Path]:
     return {"recordings": data / "recordings", "intake": base / "intake", "state": base / "p4",
             "datasets": base / "p4-datasets", "capture": base / "capture", "jobs": base / "jobs",
             "exceptions": base / "exceptions", "sources": base / "sources.json",
+            "review_catalogue": base / "review-sources.json", "review_state": base / "remote-reviews",
+            "derivatives": base / "remote-derivatives", "splits": base / "remote-splits",
+            "split_plans": base / "remote-split-plans", "handoffs": base / "remote-handoffs",
             "anvil": workspace / "anvil-embodied-ai", "policy": workspace / "fm-policy"}
 
 
@@ -117,6 +117,7 @@ def _sources(paths: dict[str, Path]) -> dict:
         receipt = json.loads(receipt_path.read_text())
         intakes.append({"session": receipt["identity"]["session"], "intake_digest": receipt["intake_digest"],
                         "episodes": len(receipt["finalization"]),
+                        "take_ids": [item["episode"] for item in receipt["finalization"]],
                         "bytes": sum(item["bytes"] for item in receipt["identity"]["files"]),
                         "source": receipt["source"]["ssh_host"] or "local",
                         "not_transferred": len(receipt["not_transferred"]),
@@ -171,6 +172,8 @@ def _compatibility(parameters: dict, paths: dict[str, Path]) -> dict:
 def _job_request(operation: str, request_id: object, parameters: dict, paths: dict[str, Path]) -> dict:
     if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
         raise Refused("invalid_request", "a job needs a request_id")
+    if operation in data_remote_review.JOBS:
+        return data_remote_review.job_request(operation, request_id, parameters, paths)
     session = _name(parameters, "session")
     if operation == "transfer":
         host, root = _source(parameters, paths)
@@ -239,6 +242,8 @@ def handle(request: object) -> dict:
                     "rsync": bool(shutil.which("rsync"))}
         elif operation == "sources":
             data = _sources(paths)
+        elif operation in data_remote_review.PARAMETERS and operation not in JOBS:
+            data = data_remote_review.handle(operation, parameters, paths)
         elif operation == "compatibility":
             data = _compatibility(parameters, paths)
         elif operation == "inventory":
@@ -253,7 +258,10 @@ def handle(request: object) -> dict:
             data = data_jobs.status(job_args)
             result_path = paths["jobs"] / data["request_id"] / "result.json"
             if data["state"] == "completed" and result_path.is_file():
-                data = {**data, "result": json.loads(result_path.read_text())}
+                result = json.loads(result_path.read_text())
+                if data.get("operation") in data_remote_review.JOBS and result.get("artifact"):
+                    result["artifact_id"] = Path(result["artifact"]).name
+                data = {**data, "result": result}
         elif operation == "job.list":
             jobs_root = paths["jobs"]
             data = [data_jobs.status(argparse.Namespace(job_root=jobs_root, request_id=path.name))

@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -54,23 +52,8 @@ def _plan(path: Path, manifest: dict, report: dict, receipt: dict) -> tuple[dict
 
 
 def _run(project: Path, request: dict) -> dict:
-    environment = os.environ.copy()
-    environment.update(UV_OFFLINE="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
-        str(Path(__file__).resolve().parents[1]), environment.get("PYTHONPATH", "")
-    )))
-    uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
-    with tempfile.TemporaryDirectory(prefix="fm-p3-split-request-") as directory:
-        request_file = Path(directory) / "request.json"
-        request_file.write_bytes(_canonical(request))
-        result = subprocess.run(
-            [uv, "run", "--no-sync", "--project", str(project), "python", "-m",
-             "fm_tools.data_split", "--internal-split", str(request_file)],
-            cwd=project, env=environment, text=True, capture_output=True, check=False,
-        )
-    if result.returncode:
-        raise ValueError(f"split writer failed: {result.stderr.strip()[-1600:]}")
-    return json.loads(result.stdout)
+    from fm_tools.data_derive import _run as run_worker
+    return run_worker(project, "--internal-split", request, module="fm_tools.data_split")
 
 
 def split(args: argparse.Namespace) -> dict:
@@ -109,11 +92,13 @@ def _split_locked(args: argparse.Namespace) -> dict:
     try:
         result = _run(project, {"dataset": str(artifact / "dataset"), "repo_id": receipt["repo_id"],
                                 "splits": assignments, "output": str(temporary / "datasets"),
-                                "profile_id": report["profile_id"]})
+                                "profile_id": report["profile_id"],
+                                "cancel_file": str(args.cancel_file) if getattr(args, "cancel_file", None) else None})
         verified = {}
         for name, entry in result.items():
             dataset = temporary / "datasets" / name
-            check = _consumer(project, dataset, entry["repo_id"], report["profile_id"], entry["frames"])
+            check = _consumer(project, dataset, entry["repo_id"], report["profile_id"], entry["frames"],
+                              cancel_file=getattr(args, "cancel_file", None))
             if check["dataset_statistics_sha256"] != entry["statistics_sha256"]:
                 raise ValueError("consumer loaded different split statistics")
             verified[name] = {**entry, "files": _inventory(dataset), "consumer": check}
@@ -125,6 +110,8 @@ def _split_locked(args: argparse.Namespace) -> dict:
                  "plan_digest": _digest(plan), "assignments": plan["assignments"],
                  "splits": verified, "training_ready": False}
         (temporary / "split.json").write_bytes(_canonical(saved) + b"\n")
+        if getattr(args, "cancel_file", None) and args.cancel_file.exists():
+            raise ValueError("processing cancelled")
         temporary.rename(destination)
     finally:
         if temporary.exists():
