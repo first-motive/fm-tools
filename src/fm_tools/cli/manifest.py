@@ -8,7 +8,8 @@ A repo declares the workflows it wants reachable from anywhere in a top-level
       "commands": {
         "teleop": {"script": "scripts/run/teleop.sh", "help": "drive a robot"},
         "sim":    {"script": "scripts/run/sim.sh",    "help": "launch the sim"},
-        "flash":  {"script": "scripts/run/flash.sh",  "credentials": ["github"]}
+        "flash":  {"script": "scripts/run/flash.sh",  "credentials": ["github"]},
+        "lint":   {"script": "scripts/run/lint.sh",   "group": "develop"}
       }
     }
 
@@ -20,6 +21,10 @@ duplicate boundary: repos own behavior, ``fm`` owns discovery and routing.
 A command that names ``credentials`` is run with those secrets brokered into its
 environment (see :mod:`fm_tools.cli.broker`), so a script never has to take a
 token as an argument and nobody ever has to type one.
+
+``group`` is optional and places the verb in a task group of the bare ``fm``
+interface; it must be one of :data:`GROUPS`. Without it the interface guesses
+from the verb's name.
 
 Declaring verbs here rather than in the central registry means a repo adds a
 workflow without an fm-tools release, and an agent working in that repo edits
@@ -46,6 +51,9 @@ MANIFEST_NAME = "fm.json"
 # The only manifest schema version the CLI knows how to read.
 SCHEMA_VERSION = 1
 
+# Task groups a command may declare; the interface owns their labels.
+GROUPS = ("workspace", "device", "data", "robot", "develop", "maintain")
+
 
 @dataclass(frozen=True)
 class Command:
@@ -67,6 +75,7 @@ class Command:
     help: str = ""
     credentials: tuple[str, ...] = ()
     healthcheck: tuple[str, ...] = ()
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -130,6 +139,7 @@ def _entry_command(
     ):
         return None, Problem("schema", repo.name, f"{name}: 'healthcheck' must be a list of arguments")
 
+    group = entry.get("group", "")
     command = Command(
         name=name,
         repo=repo.name,
@@ -138,11 +148,17 @@ def _entry_command(
         help=str(entry.get("help", "")),
         credentials=tuple(declared),
         healthcheck=tuple(healthcheck),
+        group=group if group in GROUPS else "",
     )
     if not script.is_file():
         return command, Problem("missing", repo.name, f"{name}: {raw} does not exist")
     if not os.access(script, os.X_OK):
         return command, Problem("exec", repo.name, f"{name}: {raw} is not executable")
+    if group not in ("", *GROUPS):
+        # A bad label must not unmount a working verb; the interface falls back.
+        return command, Problem(
+            "schema", repo.name, f"{name}: 'group' must be one of {', '.join(GROUPS)}"
+        )
     return command, None
 
 

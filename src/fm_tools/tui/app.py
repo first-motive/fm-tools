@@ -10,9 +10,11 @@ import json
 import os
 import shlex
 import signal
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rich import box
 from rich.table import Table
 from rich.text import Text
 from textual import events, work
@@ -27,25 +29,40 @@ from fm_tools.cli.exits import from_returncode
 from fm_tools.cli.machine import CardError, read_card
 from fm_tools.cli.manifest import Discovery, discover
 from . import logo
-from .palette import AMBER, CREAM, LILAC, PLUM, SAND
+from .palette import AMBER, BRICK, CREAM, LILAC, PLUM, SAND
 from .runner import Launch, environment, invocation, run_terminal
 
-GROUPS = (
-    "Check my workspace",
-    "Work with a device",
-    "Work with robot data",
-    "Run a robot or simulation",
-    "Set up or maintain FM",
-    "Browse all commands",
-)
-GROUP_HELP = (
-    "Inspect repository branches, local changes, workspace paths, and health.",
-    "Find a device, connect over SSH, or inspect machine configuration.",
-    "Find recording, processing, archive, and policy commands.",
-    "Find the available robot and simulation workflows. Review targets before running.",
-    "Install, update, reset, and inspect releases. Review changes before running.",
-    "Every command available in this workspace, including new repository commands.",
-)
+# Keys match the ``group`` a repository may declare in its fm.json.
+GROUPS = {
+    "workspace": (
+        "Check my workspace",
+        "Inspect repository branches, local changes, workspace paths, and health.",
+    ),
+    "device": (
+        "Work with a device",
+        "Find a device, connect over SSH, or inspect machine configuration.",
+    ),
+    "data": (
+        "Work with robot data",
+        "Find recording, processing, archive, and policy commands.",
+    ),
+    "robot": (
+        "Run a robot or simulation",
+        "Find the available robot and simulation workflows. Review targets before running.",
+    ),
+    "develop": (
+        "Develop FM software",
+        "Build packages, run the Desktop app, and check designs and diagrams.",
+    ),
+    "maintain": (
+        "Set up or maintain FM",
+        "Install, update, reset, and inspect releases. Review changes before running.",
+    ),
+    "all": (
+        "Browse all commands",
+        "Every command available in this workspace, including new repository commands.",
+    ),
+}
 # Only these exact argument lists can execute without a review.
 REPORTS = {
     "root": ("Workspace root", ("root", "--json")),
@@ -60,13 +77,20 @@ LABELS = {
 }
 
 
-def group(verb: str) -> str:
+# Verbs whose effects the review screen shows as a warning.
+QUIET_EFFECTS = ("doctor", "status")
+
+
+def group(verb: str, declared: str = "") -> str:
+    """A repository's declared group wins; otherwise guess from the verb."""
+    if declared:
+        return declared
     if verb in (*REPORTS, "doctor"):
-        return GROUPS[0]
+        return "workspace"
     if verb in ("device", "machine", "agent"):
-        return GROUPS[1]
+        return "device"
     if verb.startswith(("data", "archive", "episode", "process", "policy")):
-        return GROUPS[2]
+        return "data"
     if verb in (
         "robot",
         "sim",
@@ -74,8 +98,19 @@ def group(verb: str) -> str:
         "teleop",
         "isaac-sim",
         "view-robot",
+        "foxglove",
     ) or verb.startswith(("rig-", "lidar-", "glove-")):
-        return GROUPS[3]
+        return "robot"
+    if verb in (
+        "build",
+        "demo",
+        "desktop",
+        "diagram",
+        "new-surface",
+        "package-plugin",
+        "ui-audit",
+    ) or verb.startswith(("design-", "desktop-")):
+        return "develop"
     if verb in (
         "setup",
         "install",
@@ -86,8 +121,29 @@ def group(verb: str) -> str:
         "pkg",
         "flash",
     ) or verb.startswith("setup-"):
-        return GROUPS[4]
-    return GROUPS[5]
+        return "maintain"
+    return "all"
+
+
+def sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def title(row: dict) -> str:
+    return LABELS.get(row["verb"]) or sentence(row["help"]) or row["verb"]
+
+
+def rank(row: dict, words: list[str], group_label: str) -> int | None:
+    """None when a word is missing; lower when the verb or title matches."""
+    haystack = f"{title(row)} {row['verb']} {row['repo']} {row['help']} {group_label}"
+    if not all(word in haystack.casefold() for word in words):
+        return None
+    query, verb, name = " ".join(words), row["verb"], title(row).casefold()
+    if verb == query:
+        return 0
+    if verb.startswith(query) or name.startswith(query):
+        return 1
+    return 2 if query in verb or query in name else 3
 
 
 def command_text(argv: tuple[str, ...]) -> str:
@@ -97,6 +153,40 @@ def command_text(argv: tuple[str, ...]) -> str:
 def safe_text(value: object) -> str:
     """Treat manifest, path, and process text as data, never terminal controls."""
     return "".join(c if c.isprintable() or c == "\n" else "?" for c in str(value))
+
+
+LEVELS = {"fail": BRICK, "warn": AMBER, "pass": SAND}
+
+# Columns each list report shows; other fields stay in the JSON contract.
+VIEWS = {
+    "status": lambda row: {
+        "repo": row.get("name"),
+        "branch": row.get("branch") or "—",
+        "state": "not cloned"
+        if not row.get("cloned")
+        else "dirty"
+        if row.get("dirty")
+        else "clean",
+        "remote": "unknown"
+        if row.get("ahead") is None
+        else f"+{row['ahead']}/-{row.get('behind')}",
+    },
+    "list": lambda row: {
+        "repo": row.get("name"),
+        "directory": row.get("local_dir"),
+        "entry points": ", ".join(row.get("entry_points") or ()),
+    },
+    "commands": lambda row: {
+        "verb": row.get("verb"),
+        "repo": row.get("repo"),
+        "help": sentence(str(row.get("help") or "")),
+    },
+    "doctor": lambda row: {
+        "level": row.get("level"),
+        "repo": row.get("repo"),
+        "check": row.get("check"),
+    },
+}
 
 
 @dataclass
@@ -127,16 +217,13 @@ class Form(TaskScreen):
             f"FIRST MOTIVE / {LABELS.get(verb, verb)}", classes="heading", markup=False
         )
         with VerticalScroll():
-            yield Static(safe_text(self.row["help"]), markup=False)
+            yield Static(safe_text(sentence(self.row["help"])), markup=False)
             yield Label("Workspace")
             yield Static(safe_text(self.app.root), markup=False)
             if verb == "update":
                 yield Static(
-                    "Pull cloned repositories and run their update scripts. This changes local checkouts and can use the network."
-                )
-            elif verb == "doctor":
-                yield Static(
-                    "Check health without fetching Git refs. Declared preflights can still use the network."
+                    "Pull cloned repositories and run their update scripts. This changes local checkouts and can use the network.",
+                    classes="effects warn",
                 )
             else:
                 yield Label("Arguments (advanced)")
@@ -174,9 +261,7 @@ class Form(TaskScreen):
                 argv = (
                     (verb, *shlex.split(self.query_one(Input).value))
                     if self.query(Input)
-                    else (
-                        (verb, "--no-fetch", "--json") if verb == "doctor" else (verb,)
-                    )
+                    else (verb,)
                 )
             except ValueError:
                 self.query_one("#error", Static).update(
@@ -193,9 +278,7 @@ class Form(TaskScreen):
                     "Arguments must not contain control characters."
                 )
                 return
-            self.app.push_screen(
-                Review(Launch(argv), self.row, report=verb == "doctor")
-            )
+            self.app.push_screen(Review(Launch(argv), self.row))
 
 
 class Review(TaskScreen):
@@ -216,7 +299,8 @@ class Review(TaskScreen):
             yield Static(
                 safe_text(command.cwd if command else Path.cwd()), markup=False
             )
-            yield Static("Owner: " + safe_text(self.row["repo"]), markup=False)
+            yield Label("Owner")
+            yield Static(safe_text(self.row["repo"]), markup=False)
             effects = {
                 "update": "Pull repositories and run update scripts. Local files and installed components can change.",
                 "doctor": "Run health checks. Declared preflights may contact network services.",
@@ -231,6 +315,8 @@ class Review(TaskScreen):
                     "This command can change files, services, remote data, or robot state. Verify the target and arguments with the command owner. Existing safety and human approval checks still apply.",
                 ),
                 markup=False,
+                classes="effects"
+                + ("" if self.row["verb"] in QUIET_EFFECTS else " warn"),
             )
             if self.confirm:
                 yield Label(
@@ -244,7 +330,8 @@ class Review(TaskScreen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#cancel", Button).focus()
+        # Reports cannot change state; everything else starts on Cancel.
+        self.query_one("#run" if self.report else "#cancel", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -282,11 +369,20 @@ class Result(TaskScreen):
     def compose(self) -> ComposeResult:
         yield Static(command_text(self.launch.argv), classes="heading", markup=False)
         yield Static("Running…" if self.running else "", id="outcome", markup=False)
-        yield RichLog(id="output", wrap=True, markup=False, highlight=False)
+        yield RichLog(
+            id="output",
+            wrap=True,
+            markup=False,
+            highlight=False,
+            auto_scroll=False,
+            min_width=20,  # The default 78 overflows an 80-column terminal.
+        )
         with Horizontal(classes="buttons"):
             yield Button("Return", id="return", disabled=self.running)
             yield Button("Run again", id="again", disabled=self.running)
-            yield Button("Interrupt", id="interrupt", disabled=not self.running)
+            interrupt = Button("Interrupt", id="interrupt")
+            interrupt.display = self.running
+            yield interrupt
             if self.launch.argv[0] == "status":
                 yield Button("Fetch remote refs", id="fetch", disabled=self.running)
         yield Footer()
@@ -305,7 +401,8 @@ class Result(TaskScreen):
         self.query_one("#outcome", Static).update(f"{outcome} · exit {code}")
         self.query_one(RichLog).write(Text(safe_text(message)))
         for button in self.query(Button):
-            button.disabled = button.id == "interrupt"
+            button.disabled = False
+        self.query_one("#interrupt", Button).display = False
         self.query_one("#again", Button).disabled = not any(
             row["verb"] == self.launch.argv[0] for row in self.app.rows
         )
@@ -369,30 +466,33 @@ class Result(TaskScreen):
             return
         if not all(isinstance(row, dict) for row in rows):
             raise ValueError("Report rows must be objects.")
-        if self.launch.argv[0] == "status":
-            rows = [
-                {
-                    "repo": row.get("name"),
-                    "branch": row.get("branch") or "—",
-                    "state": "not cloned"
-                    if not row.get("cloned")
-                    else "dirty"
-                    if row.get("dirty")
-                    else "clean",
-                    "remote": "unknown"
-                    if row.get("ahead") is None
-                    else f"+{row['ahead']}/-{row.get('behind')}",
-                }
-                for row in rows
-            ]
-        if self.size.width < 100 or self.launch.argv[0] != "status":
-            for row in rows:
-                for key, value in row.items():
-                    output.write(Text(f"{safe_text(key)}: {safe_text(value)}"))
-                output.write("")
-            return
+        verb = self.launch.argv[0]
+        if verb == "doctor":
+            # Put what needs attention first; passes are the long tail.
+            order = list(LEVELS)
+            rows = sorted(
+                rows,
+                key=lambda row: order.index(row.get("level"))
+                if row.get("level") in order
+                else 0,
+            )
+            counts = Counter(row.get("level") for row in rows)
+            output.write(
+                Text(
+                    " · ".join(f"{counts[level]} {level}" for level in order),
+                    style=f"bold {BRICK if counts['fail'] else CREAM}",
+                )
+            )
+        rows = [VIEWS[verb](row) for row in rows] if verb in VIEWS else rows
         columns = list(dict.fromkeys(key for row in rows for key in row))
-        table = Table(*[safe_text(key) for key in columns], expand=False)
+        table = Table(
+            *[safe_text(key) for key in columns],
+            box=box.SIMPLE_HEAD,
+            header_style=f"bold {LILAC}",
+            border_style=SAND,
+        )
+        for column in table.columns:
+            column.overflow = "fold"
         for row in rows:
             table.add_row(
                 *[
@@ -401,7 +501,10 @@ class Result(TaskScreen):
                             json.dumps(row[key], ensure_ascii=False)
                             if isinstance(row.get(key), (list, dict))
                             else row.get(key, "—")
-                        )
+                        ),
+                        style=LEVELS.get(row.get(key), "")
+                        if key == "level"
+                        else "",
                     )
                     for key in columns
                 ]
@@ -431,6 +534,10 @@ class Result(TaskScreen):
         elif event.button.id == "fetch":
             row = next(row for row in self.app.rows if row["verb"] == "status")
             self.app.push_screen(Review(Launch(("status", "--json")), row, report=True))
+        elif event.button.id == "again" and self.launch.argv in (
+            argv for _, argv in REPORTS.values()
+        ):
+            self.app.switch_screen(Result(self.launch, report=True))
         elif event.button.id == "again":
             row = next(
                 row for row in self.app.rows if row["verb"] == self.launch.argv[0]
@@ -453,8 +560,8 @@ class FmApp(App[Launch]):
     .heading {{ height: auto; text-style: bold; margin: 1 0; }}
     #search {{ height: 3; margin: 0; }}
     #body {{ height: 1fr; }}
-    #tasks {{ width: 1fr; height: 1fr; border: none; background: {PLUM}; }}
-    #details {{ width: 40%; padding: 1 2; color: {SAND}; }}
+    #tasks {{ width: 1fr; height: 1fr; border: none; background: {PLUM}; text-wrap: nowrap; text-overflow: ellipsis; }}
+    #details {{ width: 40%; padding: 0 2; color: {SAND}; }}
     Screen.compact #body {{ layout: vertical; }}
     Screen.compact #details {{ width: 100%; height: 3; padding: 0 1; }}
     #notice {{ height: auto; max-height: 2; color: {AMBER}; }}
@@ -463,13 +570,17 @@ class FmApp(App[Launch]):
     Input:focus {{ border: heavy {LILAC}; }}
     OptionList > .option-list--option-highlighted {{ background: {LILAC}; color: {PLUM}; text-style: bold; }}
     Label {{ margin-top: 1; color: {SAND}; }}
+    .effects {{ margin-top: 1; }}
+    .warn {{ color: {AMBER}; }}
     Static {{ height: auto; }}
     .buttons {{ height: auto; min-height: 3; margin-top: 1; }}
-    Button {{ min-width: 10; margin-right: 1; }}
-    Button.-primary {{ background: {LILAC}; color: {PLUM}; }}
-    Button:focus {{ text-style: bold reverse; }}
+    Button {{ min-width: 10; height: 1; padding: 0 2; margin-right: 1; border: none; background: {SAND} 15%; color: {CREAM}; }}
+    Button:hover {{ background: {SAND} 30%; }}
+    Button.-primary {{ background: {LILAC} 40%; color: {CREAM}; }}
+    Button:focus, Button.-primary:focus {{ background: {LILAC}; color: {PLUM}; text-style: bold; }}
+    Button:disabled {{ background: {PLUM}; color: {SAND} 50%; }}
     #error {{ color: {AMBER}; }}
-    RichLog {{ height: 1fr; background: {PLUM}; color: {CREAM}; }}
+    RichLog {{ height: 1fr; background: {PLUM}; color: {CREAM}; scrollbar-gutter: stable; }}
     Footer {{ background: {PLUM}; }}
     Footer > .footer--key, FooterKey > .footer-key--key {{ background: {PLUM}; color: {LILAC}; }}
     Footer > .footer--description, FooterKey > .footer-key--description {{ background: {PLUM}; color: {SAND}; }}
@@ -503,15 +614,19 @@ class FmApp(App[Launch]):
         yield Static("What do you want to do?", id="heading", classes="heading")
         yield Input(
             self.session.query,
-            placeholder="Search tasks or commands...  / Search",
+            placeholder="Search tasks or commands",
             id="search",
+            # Typing in the menu moves its first character here; keep it.
+            select_on_focus=False,
         )
         with Horizontal(id="body"):
             yield OptionList(id="tasks")
             yield Static("", id="details", markup=False)
         yield Static("", id="notice", markup=False)
-        yield Static("Arrows Move   Enter Open   / Search   ? Help", id="keys")
-        yield Footer()
+        yield Static(
+            "Arrows Move   Enter Open   / Search   ? Help   Esc Back   Ctrl+Q Quit",
+            id="keys",
+        )
 
     def on_mount(self) -> None:
         self.resize_home()
@@ -536,11 +651,7 @@ class FmApp(App[Launch]):
     def resize_home(self) -> None:
         home = self.screen_stack[0]
         home.set_class(self.size.width < 100, "compact")
-        art = (
-            logo.WIDE
-            if self.size.height >= 42 and self.size.width >= 100
-            else logo.COMPACT
-        )
+        art = logo.MARK
         if self.ascii:
             art = art.translate(str.maketrans({"▀": "^", "▄": "_", "█": "#"}))
         home.query_one("#logo", Static).update(
@@ -554,36 +665,38 @@ class FmApp(App[Launch]):
         if self.is_mounted:
             self.resize_home()
 
+    def group_of(self, row: dict) -> str:
+        command = self.discovery.commands.get(row["verb"])
+        return group(row["verb"], command.group if command else "")
+
     def fill_menu(self) -> None:
-        query = self.session.query.casefold().strip()
-        if query:
-            self.menu_items = [
-                r
+        words = self.session.query.casefold().split()
+        if words:
+            ranked = [
+                (score, r)
                 for r in self.rows
-                if all(
-                    word
-                    in f"{LABELS.get(r['verb'], '')} {r['verb']} {r['repo']} {r['help']} {group(r['verb'])}".casefold()
-                    for word in query.split()
-                )
+                if (score := rank(r, words, GROUPS[self.group_of(r)][0])) is not None
             ]
+            self.menu_items = [r for _, r in sorted(ranked, key=lambda pair: pair[0])]
         elif self.session.category:
             self.menu_items = [
                 r
                 for r in self.rows
-                if self.session.category == GROUPS[-1]
-                or group(r["verb"]) == self.session.category
+                if self.session.category == "all"
+                or self.group_of(r) == self.session.category
             ]
         else:
             self.menu_items = list(GROUPS)
         menu = self.screen_stack[0].query_one("#tasks", OptionList)
         menu.clear_options()
+        width = max((len(r["verb"]) for r in self.rows), default=0)
         menu.add_options(
             [
                 Text(
                     safe_text(
-                        item
+                        GROUPS[item][0]
                         if isinstance(item, str)
-                        else f"{LABELS.get(item['verb'], item['verb'])}  /  fm {item['verb']}"
+                        else f"fm {item['verb']:<{width}}  {title(item)}"
                     )
                 )
                 for item in self.menu_items
@@ -595,7 +708,9 @@ class FmApp(App[Launch]):
             else None
         )
         self.screen_stack[0].query_one("#heading", Static).update(
-            self.session.category or "What do you want to do?"
+            GROUPS[self.session.category][0]
+            if self.session.category
+            else "What do you want to do?"
         )
         if not self.menu_items:
             self.screen_stack[0].query_one("#details", Static).update(
@@ -616,9 +731,9 @@ class FmApp(App[Launch]):
             return
         item = self.menu_items[event.option_index]
         description = (
-            GROUP_HELP[GROUPS.index(item)]
+            GROUPS[item][1]
             if isinstance(item, str)
-            else f"{item['help']}\nOwner: {item['repo']}\n{command_text(REPORTS[item['verb']][1] if item['verb'] in REPORTS else (item['verb'],))}"
+            else f"{sentence(item['help'])}\nOwner: {item['repo']}\n{command_text(REPORTS[item['verb']][1] if item['verb'] in REPORTS else (item['verb'],))}"
         )
         self.screen_stack[0].query_one("#details", Static).update(
             safe_text(description)
@@ -645,6 +760,11 @@ class FmApp(App[Launch]):
             self.fill_menu()
         elif item["verb"] in REPORTS:
             self.push_screen(Result(Launch(REPORTS[item["verb"]][1]), report=True))
+        elif item["verb"] == "doctor":
+            # Read-only, so there are no arguments to ask for; review is enough.
+            self.push_screen(
+                Review(Launch(("doctor", "--no-fetch", "--json")), item, report=True)
+            )
         else:
             self.push_screen(Form(item))
 

@@ -127,6 +127,25 @@ def test_non_executable_script_is_reported(tmp_path):
     assert [problem.kind for problem in discovery.problems] == ["exec"]
 
 
+def test_unknown_group_still_mounts_but_is_reported(tmp_path):
+    checkout = _manifest(
+        tmp_path,
+        FM_ROS2,
+        {
+            "teleop": {"script": "run.sh", "group": "robot"},
+            "sim": {"script": "run.sh", "group": "robots"},
+        },
+    )
+    _script(checkout, "run.sh")
+
+    discovery = discover(tmp_path)
+    assert discovery.commands["teleop"].group == "robot"
+    assert discovery.commands["sim"].group == "", "A bad group must fall back"
+    assert [(p.kind, p.detail.split(":")[0]) for p in discovery.problems] == [
+        ("schema", "sim")
+    ]
+
+
 def test_first_repo_wins_a_colliding_verb(tmp_path):
     ros2 = _manifest(tmp_path, FM_ROS2, {"sim": {"script": "ros2.sh"}})
     desktop = _manifest(tmp_path, FM_DESKTOP, {"sim": {"script": "desktop.sh"}})
