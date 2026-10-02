@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
 
 from fm_tools.cli.machine import CardError, read_card
@@ -110,6 +110,44 @@ def _read_json(path: Path, *, maximum: int = 8 * 1024 * 1024) -> object:
     return json.loads(_read_metadata(path, maximum=maximum))
 
 
+def _words(stem: str) -> str:
+    """`wynand_place-empty-bottle_8ab78dbe` → `wynand place empty bottle`."""
+    return re.sub(r"_[0-9a-f]{8,}$", "", stem).replace("_", " ").replace("-", " ")
+
+
+def _catalogue_item(entry: dict, location_id: str) -> dict:
+    """One library item for a catalogue entry, named for a person.
+
+    The entry id stays the source identity; only the name, the day and the task
+    are read from the catalogue's own detail. A take is named by its task and
+    operator (`Move empty bottle · wynand`), a processing set by the take it came
+    from, and a glove CSV with no take by its glove.
+    """
+    detail = entry.get("detail") or {}
+    name = entry["id"]
+    task = detail.get("task")
+    if entry["kind"] == "human-capture" and task and task != "unassigned":
+        session = entry["id"].rpartition("__")[2]
+        operator, _, rest = session.partition("_")
+        name = task.replace("-", " ").capitalize() + (f" · {operator}" if rest.startswith(task) else "")
+    elif entry["kind"] == "human-capture" and task == "unassigned":
+        name = entry["id"].rpartition("__")[2]
+    elif detail.get("orphan"):
+        parts = entry["prefix"].split("/")
+        glove = parts[1].removeprefix("glove_") if len(parts) == 3 else "unknown"
+        name = f"{_words(parts[-1].removesuffix('.tactile.csv'))} · {glove} glove, no take"
+    elif entry["kind"] == "derived" and detail.get("scope") and detail.get("set_kind"):
+        name = f"{_words(detail['scope'])} · {detail['set_kind']}"
+    item = {"source_id": entry["id"], "producer_id": location_id, "name": name, "kind": entry["kind"],
+            "bytes": entry["bytes"], "member_count": entry["object_count"], "receipt": entry.get("receipt"),
+            "archive_prefix": entry["prefix"]}
+    if detail.get("recorded_date"):
+        item["recorded_at"] = detail["recorded_date"]
+    if task and task != "unassigned":
+        item["task_id"] = task
+    return item
+
+
 def refresh(library: object, location: dict) -> dict:
     """Read only declared roots. Unknown adapters stay visible as unsupported."""
     adapter = location.get("adapter")
@@ -177,9 +215,7 @@ def refresh(library: object, location: dict) -> dict:
             for entry in catalogue["entries"]:
                 # Catalogue identity is deliberately separate until a validated
                 # receipt proves the producer and frozen revision.
-                item = {"source_id": entry["id"], "producer_id": location["id"],
-                              "name": entry["id"], "kind": entry["kind"], "bytes": entry["bytes"],
-                              "member_count": entry["object_count"], "receipt": entry.get("receipt"), "archive_prefix": entry["prefix"]}
+                item = _catalogue_item(entry, location["id"])
                 if store is not None and entry.get("receipt") and entry.get("prefix", "").startswith("sources/"):
                     try:
                         receipt = validate_receipt(json.loads(store.get_bytes(entry["receipt"])))
@@ -758,8 +794,19 @@ def execute(args: argparse.Namespace) -> dict:
                 if isinstance(prefix, str) and not prefix.startswith("sources/"):
                     if not is_layout_key(prefix) or not prefix.startswith(_LIST_PREFIXES):
                         raise Refusal("invalid_archive_prefix")
-                    refs = list(islice(_read_store().list_prefix(prefix), args.offset, args.offset + args.limit + 1))
-                    return {"files": [{"path": ref.key.removeprefix(prefix), "size": ref.size} for ref in refs[:args.limit]],
+                    store = _read_store()
+
+                    def gloves():
+                        # A take's glove CSVs live under tactile-raw/, named by its
+                        # session; the catalogue counts them as members of the take.
+                        if item.get("kind") != "human-capture" or not prefix.startswith("episodes/"):
+                            return
+                        name = item["source_id"].rpartition("__")[2] + ".tactile.csv"
+                        yield from (ref for ref in store.list_prefix("tactile-raw/") if ref.key.rsplit("/", 1)[-1] == name)
+
+                    refs = list(islice(chain(store.list_prefix(prefix), gloves()), args.offset, args.offset + args.limit + 1))
+                    return {"files": [{"path": ref.key.removeprefix(prefix) if ref.key.startswith(prefix) else ref.key,
+                                       "size": ref.size} for ref in refs[:args.limit]],
                             "total": None, "evidence": "provider_listing",
                             "next_offset": args.offset + args.limit if len(refs) > args.limit else None}
                 key = copy.get("receipt")

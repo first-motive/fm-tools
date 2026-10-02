@@ -60,6 +60,14 @@ refresh can scan the provider. A failed scan retains last-known copies. A
 cached catalogue keeps its original observation time and partial coverage.
 Unknown formats and offline locations remain visible.
 
+A Backblaze catalogue item keeps its catalogue id as its source identity but
+is named for a person: a take by its task and operator (`Move empty bottle ·
+wynand`) with its recorded day and task, a processing set by the take it came
+from, and a glove CSV with no take by its glove. fm-data groups a take's glove
+CSVs into the take, and the take's file list includes them. Lists are newest
+first. An item every location confirms is gone leaves the default list and
+stays reachable with `--copy-state absent`.
+
 Preview reads one selected member: text is limited to 64 KiB and images or
 videos to 8 MiB. Larger media and cloud-only members require a verified
 download. History records organisation changes; jobs and copy facts provide

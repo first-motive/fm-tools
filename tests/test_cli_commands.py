@@ -504,6 +504,33 @@ def test_archive_inventory_keeps_unknown_formats_and_refuses_symlinks(tmp_path):
         freeze(str(tmp_path), "lerobot", "robot-a", "datasets/shared")
 
 
+def test_archive_catalogue_items_are_named_for_a_person():
+    from fm_tools.archive_workflow import _catalogue_item
+
+    def named(entry):
+        base = {"bytes": 1, "object_count": 1, "prefix": "episodes/x", "receipt": None}
+        return _catalogue_item({**base, **entry}, "backblaze")
+
+    take = named({"id": "fm_egocentric__wynand_move-empty-bottle_86a6ffd0", "kind": "human-capture",
+                  "detail": {"recorded_date": "2026-09-29", "task": "move-empty-bottle", "tactile": True}})
+    assert take["name"] == "Move empty bottle · wynand", "a take reads as its task and operator"
+    assert take["source_id"] == "fm_egocentric__wynand_move-empty-bottle_86a6ffd0", "identity is unchanged"
+    assert (take["recorded_at"], take["task_id"]) == ("2026-09-29", "move-empty-bottle"), (
+        "the day and task the catalogue already knows reach the library")
+    auto = named({"id": "fm_egocentric__auto-20260730-082142", "kind": "human-capture",
+                  "detail": {"recorded_date": "2026-07-30", "task": "unassigned"}})
+    assert auto["name"] == "auto-20260730-082142" and "task_id" not in auto, "an unassigned take has no task"
+    derived = named({"id": "derived:wynand_place-empty-bottle_8ab78dbe/processing/" + "9" * 64, "kind": "derived",
+                     "detail": {"scope": "wynand_place-empty-bottle_8ab78dbe", "set_kind": "processing"}})
+    assert derived["name"] == "wynand place empty bottle · processing", "a processing set names its take"
+    orphan = named({"id": "tactile:tactile-raw/glove_left/wynand_calibration_5d70c85a.tactile.csv",
+                    "kind": "human-capture", "prefix": "tactile-raw/glove_left/wynand_calibration_5d70c85a.tactile.csv",
+                    "detail": {"orphan": True}})
+    assert orphan["name"] == "wynand calibration · left glove, no take", "a lone glove says it has no take"
+    model = named({"id": "act/run-1", "kind": "model"})
+    assert model["name"] == "act/run-1", "anything else keeps its catalogue id"
+
+
 def test_archive_anvil_busy_guard_ignores_an_empty_session(tmp_path):
     from fm_tools.archive_probe import scan
     from fm_tools.archive_workflow import _capture_busy
