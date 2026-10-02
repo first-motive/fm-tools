@@ -282,6 +282,7 @@ def test_the_environment_is_untouched_for_a_command_declaring_no_credentials(
 
 def test_client_only_archive_forwards_to_the_registered_remote_owner(tmp_path, monkeypatch):
     monkeypatch.setenv('FM_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
     calls = []
     def ssh(command, **kwargs):
         calls.append(command)
@@ -290,5 +291,8 @@ def test_client_only_archive_forwards_to_the_registered_remote_owner(tmp_path, m
     assert main(['archive', '--host', 'tower-alias', 'library', 'search', 'two words', '--json']) == 3
     assert calls[-1][-2] == 'tower-alias'
     assert calls[-1][-1] == "fm archive library search 'two words' --json"
+    assert 'ControlMaster=auto' in calls[-1], "each click must not pay a fresh SSH login"
+    assert f'ControlPath={tmp_path}/.ssh/fm-archive-%C' in calls[-1], "the shared socket must be private to this user"
+    assert (tmp_path / '.ssh').stat().st_mode & 0o077 == 0, "the socket directory must not be group or world readable"
     assert main(['archive', '--host', '-oProxyCommand=bad', 'library', 'list']) == 3
     assert len(calls) == 1
