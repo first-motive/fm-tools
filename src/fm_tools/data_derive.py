@@ -42,7 +42,7 @@ def _project(path: Path, revision: str) -> Path:
     return project
 
 
-def _run(project: Path, mode: str, request: dict) -> dict:
+def _run(project: Path, mode: str, request: dict, *, module: str = "fm_tools.data_derive") -> dict:
     environment = os.environ.copy()
     environment.update(UV_OFFLINE="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
@@ -53,7 +53,7 @@ def _run(project: Path, mode: str, request: dict) -> dict:
         request_file = Path(directory) / "request.json"
         request_file.write_bytes(_canonical(request))
         command = [uv, "run", "--no-sync", "--project", str(project), "python", "-m",
-                   "fm_tools.data_derive", mode, str(request_file)]
+                   module, mode, str(request_file)]
         process = subprocess.Popen(command, cwd=project, env=environment, text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         while True:
@@ -66,8 +66,12 @@ def _run(project: Path, mode: str, request: dict) -> dict:
                         os.killpg(process.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-                    process.communicate()
-                    raise ValueError("derivation cancelled")
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate()
+                    raise ValueError("processing cancelled")
     if process.returncode:
         raise ValueError(f"{mode} failed: {stderr.strip()[-1600:]}")
     return json.loads(stdout)
@@ -110,10 +114,13 @@ def preview(args: argparse.Namespace) -> dict:
             "source_digest": manifest["content_digest"], "report_digest": _digest(report),
             "start": args.start, "stop": args.stop, "output": str(temporary),
             "cameras": sorted(mapping["videos"]),
+            "cancel_file": str(args.cancel_file) if getattr(args, "cancel_file", None) else None,
         })
         if _inventory(source) != manifest["files"]:
             raise ValueError("source changed during preview")
         digest = _preview_receipt(temporary, manifest, report, decision)
+        if getattr(args, "cancel_file", None) and args.cancel_file.exists():
+            raise ValueError("processing cancelled")
         temporary.rename(destination)
     finally:
         if temporary.exists():
@@ -188,6 +195,8 @@ def _derive_locked(args: argparse.Namespace) -> dict:
         (temporary / "derivative.json").write_bytes(_canonical(receipt) + b"\n")
         if _inventory(temporary / "dataset") != files:
             raise ValueError("derivative changed before promotion")
+        if getattr(args, "cancel_file", None) and args.cancel_file.exists():
+            raise ValueError("processing cancelled")
         temporary.rename(destination)
     finally:
         if temporary.exists():
@@ -229,6 +238,7 @@ def _internal_preview(request: dict) -> dict:
 
 def _internal_derive(request: dict) -> dict:
     import torch
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets import LeRobotDataset
 
     source = LeRobotDataset(request["repo_id"], root=request["source"], video_backend="pyav")
@@ -236,17 +246,18 @@ def _internal_derive(request: dict) -> dict:
                 if name not in {"index", "episode_index", "frame_index", "timestamp", "task_index"}}
     output = LeRobotDataset.create(request["output_repo_id"], request["fps"], features,
                                    root=request["output"], robot_type=request["robot_type"],
-                                   use_videos=True, video_backend="pyav")
+                                   use_videos=True, video_backend="pyav",
+                                   rgb_encoder=RGBEncoderConfig(vcodec="h264"))
     cameras = [name for name, value in features.items() if value["dtype"] == "video"]
     numeric = [name for name, value in features.items() if value["dtype"].startswith("float")]
     frame_map = []
     output_row = 0
     for output_episode, item in enumerate(request["included"]):
         if request["cancel_file"] and Path(request["cancel_file"]).exists():
-            raise ValueError("derivation cancelled")
+            raise ValueError("processing cancelled")
         for source_frame in range(item["start"], item["stop"]):
             if request["cancel_file"] and Path(request["cancel_file"]).exists():
-                raise ValueError("derivation cancelled")
+                raise ValueError("processing cancelled")
             row = source[item["source_row_start"] + source_frame]
             if int(row["episode_index"]) != item["episode_index"] or int(row["frame_index"]) != source_frame:
                 raise ValueError("source frame differs from approved mapping")

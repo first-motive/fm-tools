@@ -32,6 +32,14 @@ OPERATIONS = {
                 "fps": "int", "task": "text", "repo_id": "text", "output_root": "path",
                 "exceptions_file": "optional_path", "reviewer": "optional_text", "human_attestation": "bool"},
 }
+OPERATIONS.update({
+    "preview": {**{name: "path" for name in ("source_root", "contract_dir", "report_dir", "state_root", "consumer_project")},
+                **{name: "int" for name in ("episode", "start", "stop")}},
+    "split": {name: "path" for name in ("source_root", "contract_dir", "report_dir", "artifact_dir",
+              "approval_file", "review_state_root", "split_plan", "output_root", "consumer_project")},
+    "verify": {**{name: "path" for name in ("source_root", "contract_dir", "report_dir", "state_root",
+               "consumer_project", "artifact_dir", "approval_file", "review_state_root")}, "split_dir": "optional_path"},
+})
 _KINDS = {
     "path": lambda value: isinstance(value, str) and Path(value).is_absolute(),
     "optional_path": lambda value: value is None or (isinstance(value, str) and Path(value).is_absolute()),
@@ -234,6 +242,10 @@ def _run(request: dict, cancel_file: Path) -> dict:
                             progress=lambda value: _atomic(cancel_file.with_name("progress.json"), value))
         except RuntimeError as exc:
             raise ValueError("archive_provider_failed") from exc
+    if request["operation"] in {"preview", "split", "verify"}:
+        from fm_tools import data_derive, data_split, data_handoff
+        action = {"preview": data_derive.preview, "split": data_split.split, "verify": data_handoff.verify}[request["operation"]]
+        return action(argparse.Namespace(**parameters, cancel_file=cancel_file))
     if request["operation"] == "derive":
         from fm_tools.data_derive import derive
 
@@ -252,7 +264,7 @@ def _run(request: dict, cancel_file: Path) -> dict:
 
 
 # The directory each operation's result names, recorded as the job's artifact.
-_ARTIFACT = {"derive": "artifact", "transfer": "intake_dir", "scan": "scan_dir", "convert": "conversion_dir", "archive_copy": "artifact"}
+_ARTIFACT = {"preview": "artifact", "split": "artifact", "verify": "artifact", "derive": "artifact", "transfer": "intake_dir", "scan": "scan_dir", "convert": "conversion_dir", "archive_copy": "artifact"}
 
 
 def worker(path: Path) -> None:
