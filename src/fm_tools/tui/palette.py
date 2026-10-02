@@ -13,10 +13,12 @@ for log severity — the core set has no warm or red tone.
 from __future__ import annotations
 
 # Core palette — mirrors the First Motive brand set.
+# fm-render:begin terminal-brand-palette sha256:c34884fad892679a7c901bd7c55c28282185a8b0fd9396a43592adff1625a6d8 — rendered by the First Motive render plane — edit the upstream source, not this file
 PLUM = "#3B3443"
 LILAC = "#B6A5C6"
 SAND = "#E7DDC8"
 CREAM = "#ECE2CF"
+# fm-render:end terminal-brand-palette
 
 # Severity accents — warm tones the core brand set lacks.
 AMBER = "#D9B96A"

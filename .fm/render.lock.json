@@ -2,7 +2,7 @@
   "_fm_render": {
     "artifact": "render-lock",
     "origin": "rendered by the First Motive render plane \u2014 edit the upstream source, not this file",
-    "sha256": "1d9e60d368efaf3c1df33c5cf3c4182874e09749e064ed165e9e3f1ee9a97124"
+    "sha256": "0dfd3edcc9cfd894c6d70a84369fd82209de7acefac4521f2489e39656a9484b"
   },
   "artifacts": {
     "agents-invariants": {
@@ -10,7 +10,7 @@
       "paths": [
         "AGENTS.md"
       ],
-      "sha256": "0725d9687ad94ff0421993d070be039b4bef26b9cb06b68a8e7469aa9c0ceae9",
+      "sha256": "311959fea747960e045bbf2fcf4e3314930fe25555e9df4931c97b4c0f7017f0",
       "stamp": "html"
     },
     "contributing-workflow": {
@@ -60,6 +60,14 @@
       ],
       "sha256": "405935ed00b9cfe5a28a712042b4c00c4614d71aad44333bbea056d4ca1923d0",
       "stamp": "hash"
+    },
+    "terminal-brand-palette": {
+      "mode": "block",
+      "paths": [
+        "src/fm_tools/tui/palette.py"
+      ],
+      "sha256": "c34884fad892679a7c901bd7c55c28282185a8b0fd9396a43592adff1625a6d8",
+      "stamp": "sh"
     }
   },
   "source": "first-motive render plane"
