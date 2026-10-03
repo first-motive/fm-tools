@@ -40,13 +40,13 @@ backend=$(fm-pick "Pick a backend" mujoco gazebo isaac)
 
 ## The `fm` CLI
 
-Run `fm` with no arguments in a terminal to open the First Motive task menu.
-Search commands, inspect workspace reports, or review and run an action. The
-terminal logo uses the approved mark without text below it. Direct commands
-such as `fm status --json` keep their existing behavior.
+Run `fm` with no arguments to open the terminal workspace. Click through repos,
+health checks, updates, and guided ecosystem workflows. Forms collect named
+values; confirmations, live output, nested terminal menus, and results stay inside
+the app. Direct `fm <command>` use keeps its existing behavior.
 
 See the [terminal interface guide](src/fm_tools/tui/README.md) for controls,
-terminal support, and verification, or the [TUI plan](docs/tui-plan.md) for scope.
+workflow metadata, and verification.
 
 The [Cloud Storage coordinator](docs/cloud-storage.md) provides the shared
 library, organisation, and verified copy jobs behind `fm archive`.

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json as jsonlib
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,6 +102,96 @@ class Discovery:
     problems: list[Problem]
 
 
+def valid_tui(controls: object) -> bool:
+    """Validate optional UI metadata without importing the terminal framework."""
+    if not isinstance(controls, list) or len(controls) > 500:
+        return False
+    for control in controls:
+        if (
+            not isinstance(control, dict)
+            or not isinstance(control.get("title"), str)
+            or not control["title"].strip()
+        ):
+            return False
+        if set(control) - {"title", "path", "fields", "description", "effects"}:
+            return False
+        if any(
+            not isinstance(control.get(key, ""), str)
+            for key in ("description", "effects")
+        ):
+            return False
+        path = control.get("path", [])
+        if not isinstance(path, list) or not all(
+            isinstance(v, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", v)
+            for v in path
+        ):
+            return False
+        fields = control.get("fields", [])
+        if not isinstance(fields, list) or len(fields) > 100:
+            return False
+        keys = set()
+        for field in fields:
+            if not isinstance(field, dict) or set(field) - {
+                "key",
+                "label",
+                "flag",
+                "kind",
+                "choices",
+                "default",
+                "required",
+                "help",
+                "multiple",
+                "repeat",
+                "arity",
+                "exclusive",
+                "group_required",
+            }:
+                return False
+            key = field.get("key", "")
+            if (
+                not isinstance(key, str)
+                or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]*", key)
+                or key in keys
+            ):
+                return False
+            keys.add(key)
+            if not isinstance(field.get("label"), str) or not field["label"].strip():
+                return False
+            flag = field.get("flag", "")
+            if not isinstance(flag, str) or (
+                flag and not re.fullmatch(r"--?[a-zA-Z0-9][a-zA-Z0-9-]*", flag)
+            ):
+                return False
+            kind = field.get("kind", "text")
+            if kind not in ("text", "number", "boolean", "path", "device") or (
+                kind == "boolean" and not flag
+            ):
+                return False
+            choices = field.get("choices", [])
+            if (
+                not isinstance(choices, list)
+                or len(choices) > 1000
+                or not all(isinstance(v, str) for v in choices)
+            ):
+                return False
+            if any(
+                not isinstance(field.get(k, ""), str)
+                for k in ("default", "help", "exclusive")
+            ):
+                return False
+            if any(
+                not isinstance(field.get(k, False), bool)
+                for k in ("required", "multiple", "repeat", "group_required")
+            ):
+                return False
+            if (
+                not isinstance(field.get("arity", 0), int)
+                or not 0 <= field.get("arity", 0) <= 100
+            ):
+                return False
+    return True
+
+
 def _entry_command(
     name: str, entry: object, repo: Repo, checkout: Path
 ) -> tuple[Command | None, Problem | None]:
@@ -118,13 +209,17 @@ def _entry_command(
     raw = entry["script"]
     script = (checkout / raw).resolve()
     if not script.is_relative_to(checkout.resolve()):
-        return None, Problem("escapes", repo.name, f"{name}: {raw} points outside the checkout")
+        return None, Problem(
+            "escapes", repo.name, f"{name}: {raw} points outside the checkout"
+        )
 
     declared = entry.get("credentials", ())
     if not isinstance(declared, (list, tuple)) or not all(
         isinstance(item, str) for item in declared
     ):
-        return None, Problem("schema", repo.name, f"{name}: 'credentials' must be a list of names")
+        return None, Problem(
+            "schema", repo.name, f"{name}: 'credentials' must be a list of names"
+        )
     unknown = [item for item in declared if item not in CREDENTIALS]
     if unknown:
         return None, Problem(
@@ -137,7 +232,9 @@ def _entry_command(
     if not isinstance(healthcheck, list) or not all(
         isinstance(arg, str) and arg and "\x00" not in arg for arg in healthcheck
     ):
-        return None, Problem("schema", repo.name, f"{name}: 'healthcheck' must be a list of arguments")
+        return None, Problem(
+            "schema", repo.name, f"{name}: 'healthcheck' must be a list of arguments"
+        )
 
     group = entry.get("group", "")
     command = Command(
@@ -150,6 +247,10 @@ def _entry_command(
         healthcheck=tuple(healthcheck),
         group=group if group in GROUPS else "",
     )
+    if not valid_tui(entry.get("tui", [])):
+        return command, Problem(
+            "schema", repo.name, f"{name}: invalid tui workflow controls"
+        )
     if not script.is_file():
         return command, Problem("missing", repo.name, f"{name}: {raw} does not exist")
     if not os.access(script, os.X_OK):
@@ -175,15 +276,27 @@ def load_manifest(repo: Repo, root: Path) -> tuple[list[Command], list[Problem]]
         return [], [Problem("parse", repo.name, f"{MANIFEST_NAME}: {exc}")]
 
     if not isinstance(data, dict):
-        return [], [Problem("schema", repo.name, f"{MANIFEST_NAME}: top level must be an object")]
+        return [], [
+            Problem(
+                "schema", repo.name, f"{MANIFEST_NAME}: top level must be an object"
+            )
+        ]
     if data.get("version") != SCHEMA_VERSION:
         return [], [
-            Problem("schema", repo.name, f"{MANIFEST_NAME}: version must be {SCHEMA_VERSION}")
+            Problem(
+                "schema",
+                repo.name,
+                f"{MANIFEST_NAME}: version must be {SCHEMA_VERSION}",
+            )
         ]
 
     commands = data.get("commands", {})
     if not isinstance(commands, dict):
-        return [], [Problem("schema", repo.name, f"{MANIFEST_NAME}: 'commands' must be an object")]
+        return [], [
+            Problem(
+                "schema", repo.name, f"{MANIFEST_NAME}: 'commands' must be an object"
+            )
+        ]
 
     found: list[Command] = []
     problems: list[Problem] = []
@@ -212,13 +325,21 @@ def discover(root: Path, reserved: frozenset[str] = frozenset()) -> Discovery:
         for command in found:
             if command.name in reserved:
                 problems.append(
-                    Problem("collision", repo.name, f"{command.name}: shadows a built-in verb")
+                    Problem(
+                        "collision",
+                        repo.name,
+                        f"{command.name}: shadows a built-in verb",
+                    )
                 )
                 continue
             owner = commands.get(command.name)
             if owner is not None:
                 problems.append(
-                    Problem("collision", repo.name, f"{command.name}: already claimed by {owner.repo}")
+                    Problem(
+                        "collision",
+                        repo.name,
+                        f"{command.name}: already claimed by {owner.repo}",
+                    )
                 )
                 continue
             commands[command.name] = command

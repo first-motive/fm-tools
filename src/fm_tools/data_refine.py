@@ -352,39 +352,8 @@ def _contract(args: argparse.Namespace) -> dict:
     return {"status": "completed", "source_digest": identity, "artifact": str(destination), "training_ready": False}
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "--internal-probe":
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--source-root", type=Path, required=True)
-        parser.add_argument("--repo-id", required=True)
-        parser.add_argument("--sample", dest="samples", type=_sample, action="append", default=[])
-        parser.add_argument("--profile", dest="profiles", action="append", choices=PROFILES)
-        args = parser.parse_args(argv[1:])
-        print(json.dumps(_probe(args.source_root, args.repo_id, args.samples, args.profiles)))
-        return 0
-    if argv == ["serve"]:
-        from fm_tools.data_remote import serve
-
-        return serve()
-    if argv and argv[0] == "remote":
-        from fm_tools.data_remote import remote
-
-        parser = argparse.ArgumentParser(prog="fm data-refine remote")
-        parser.add_argument("--host", required=True, help="an SSH alias for the processing host, or 'local'")
-        request = parser.add_mutually_exclusive_group(required=True)
-        request.add_argument("--request", help="one JSON request")
-        request.add_argument("--request-file", type=Path)
-        parser.add_argument("--timeout", type=float, default=120)
-        parser.add_argument("--json", action="store_true", help="accepted for symmetry; output is always JSON")
-        args = parser.parse_args(argv[1:])
-        try:
-            result, code = remote(args)
-        except (OSError, json.JSONDecodeError) as exc:
-            result, code = {"schema_version": SCHEMA_VERSION, "state": "refused",
-                            "reason_code": "invalid_request", "detail": str(exc)}, 2
-        print(json.dumps(result))
-        return code
+def build_parser() -> argparse.ArgumentParser:
+    """Shared argument definitions for the CLI and interactive workflow controls."""
     parser = argparse.ArgumentParser(prog="fm data-refine")
     sub = parser.add_subparsers(dest="verb", required=True)
     profiles = sub.add_parser("profiles", help="show ACT, SmolVLA, and pi05 requirements")
@@ -512,6 +481,43 @@ def main(argv: list[str] | None = None) -> int:
     conversion.add_argument("--reviewer")
     conversion.add_argument("--human-attestation", action="store_true")
     conversion.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--internal-probe":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--source-root", type=Path, required=True)
+        parser.add_argument("--repo-id", required=True)
+        parser.add_argument("--sample", dest="samples", type=_sample, action="append", default=[])
+        parser.add_argument("--profile", dest="profiles", action="append", choices=PROFILES)
+        args = parser.parse_args(argv[1:])
+        print(json.dumps(_probe(args.source_root, args.repo_id, args.samples, args.profiles)))
+        return 0
+    if argv == ["serve"]:
+        from fm_tools.data_remote import serve
+
+        return serve()
+    if argv and argv[0] == "remote":
+        from fm_tools.data_remote import remote
+
+        parser = argparse.ArgumentParser(prog="fm data-refine remote")
+        parser.add_argument("--host", required=True, help="an SSH alias for the processing host, or 'local'")
+        request = parser.add_mutually_exclusive_group(required=True)
+        request.add_argument("--request", help="one JSON request")
+        request.add_argument("--request-file", type=Path)
+        parser.add_argument("--timeout", type=float, default=120)
+        parser.add_argument("--json", action="store_true", help="accepted for symmetry; output is always JSON")
+        args = parser.parse_args(argv[1:])
+        try:
+            result, code = remote(args)
+        except (OSError, json.JSONDecodeError) as exc:
+            result, code = {"schema_version": SCHEMA_VERSION, "state": "refused",
+                            "reason_code": "invalid_request", "detail": str(exc)}, 2
+        print(json.dumps(result))
+        return code
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         if args.verb in {"inventory", "transfer"}:

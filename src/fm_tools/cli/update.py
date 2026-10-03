@@ -43,7 +43,7 @@ def _first_line(text: str) -> str:
     return ""
 
 
-def _update_repo(repo: Repo, base: Path) -> dict:
+def update_repo(repo: Repo, base: Path) -> dict:
     """Update one repo: absent, skipped-dirty, pull-failed, or updated."""
     path = repo.checkout(base)
     if not (path / ".git").exists():
@@ -99,7 +99,7 @@ def gather_updates(base: Path | None = None) -> list[dict]:
     :mod:`fm_tools.cli.workspace`).
     """
     root = base if base is not None else resolve_root()
-    return [_update_repo(repo, root) for repo in REPOS]
+    return [update_repo(repo, root) for repo in REPOS]
 
 
 def _render_table(rows: list[dict]) -> None:
