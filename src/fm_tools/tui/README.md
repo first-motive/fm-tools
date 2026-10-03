@@ -1,6 +1,15 @@
 # Use The FM Terminal Interface
 
 Run `fm` with no arguments in a terminal. Use task groups or type to search.
+Menus show task names in plain language. Search also accepts CLI names.
+
+Choose **List of repos**, select a repo, then choose an action. The repo screen
+shows its location, status, installer actions, and available repository workflows.
+Installer actions use the selected repo as a fixed target. A missing repo links
+to workspace setup. Back returns to the previous selection.
+
+The review screen shows the exact command before execution. Installer actions
+ask you to confirm the repo name. Other advanced actions retain command confirmation.
 Reports open directly. Other actions show their arguments, workspace, command,
 and effects before they run. The approved logo appears without text below it.
 

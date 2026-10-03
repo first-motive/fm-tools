@@ -114,23 +114,45 @@ async def test_fm_doctor_lists_failures_first_from_the_top(tmp_path, monkeypatch
         assert log.scroll_y == 0, "A report must open at its first line"
 
 
-async def test_fm_repository_report_is_a_table(tmp_path, monkeypatch):
-    from textual.widgets import RichLog
+async def test_fm_repository_menu_opens_actions_and_preserves_target(
+    tmp_path, monkeypatch
+):
+    from textual.widgets import OptionList, Static
     from fm_tools.cli.manifest import Discovery
     from fm_tools.cli.registry import REPOS
     from fm_tools.tui.app import FmApp
 
     monkeypatch.setenv("FM_HOME", str(tmp_path))
+    repo = REPOS[0]
+    (repo.checkout(tmp_path) / ".git").mkdir(parents=True)
+    (repo.checkout(tmp_path) / "install.sh").touch()
     app = FmApp(tmp_path, Discovery({}, []))
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.press(*"repositories", "down", "enter")
-        await app.workers.wait_for_complete()
-        await pilot.pause()
-        lines = app.screen.query_one(RichLog).lines
-        text = [line.text for line in lines if line.text.strip()]
-        assert text[0].split() == ["repo", "directory", "entry", "points"]
-        assert any(line.split()[:1] == [REPOS[0].name] for line in text), (
-            "Each repository must be one table row, not key: value lines"
+        await pilot.press(*"list of repos", "down", "enter")
+        assert repo.name in str(
+            app.screen.query_one(OptionList).get_option_at_index(0).prompt
+        )
+        await pilot.press("enter")
+        assert repo.name in str(app.screen.query_one(".heading", Static).render())
+        menu = app.screen.query_one(OptionList)
+        labels = [
+            str(menu.get_option_at_index(i).prompt) for i in range(menu.option_count)
+        ]
+        assert "Install repo" in labels
+        assert all(not label.startswith("fm ") for label in labels)
+        menu.highlighted = labels.index("Install repo")
+        await pilot.press("enter")
+        await pilot.click("#review")
+        assert f"fm install {repo.name}" in str(
+            app.screen.query_one("#preview", Static).render()
+        )
+        await pilot.click("#cancel")
+        await pilot.press("escape", "escape")
+        assert repo.name in str(
+            app.screen.query_one(OptionList).get_option_at_index(0).prompt
+        )
+        assert app.return_value is None, (
+            "Browsing and cancelling must not run an installer"
         )
 
 

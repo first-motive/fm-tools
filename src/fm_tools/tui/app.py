@@ -28,6 +28,7 @@ from fm_tools.cli.commands import BUILTIN_VERBS, catalogue
 from fm_tools.cli.exits import from_returncode
 from fm_tools.cli.machine import CardError, read_card
 from fm_tools.cli.manifest import Discovery, discover
+from fm_tools.cli.registry import REPOS, Repo, current_platform
 from . import logo
 from .palette import AMBER, BRICK, CREAM, LILAC, PLUM, SAND
 from .runner import Launch, environment, invocation, run_terminal
@@ -59,21 +60,85 @@ GROUPS = {
         "Install, update, reset, and inspect releases. Review changes before running.",
     ),
     "all": (
-        "Browse all commands",
-        "Every command available in this workspace, including new repository commands.",
+        "Browse all actions",
+        "Find every available action in this workspace.",
     ),
 }
 # Only these exact argument lists can execute without a review.
 REPORTS = {
-    "root": ("Workspace root", ("root", "--json")),
-    "list": ("Repositories", ("list", "--json")),
+    "root": ("Workspace location", ("root", "--json")),
+    "list": ("List of repos", ("list", "--json")),
     "status": ("Repository status", ("status", "--no-fetch", "--json")),
-    "commands": ("Command catalogue", ("commands", "--json")),
+    "commands": ("Available actions", ("commands", "--json")),
 }
 LABELS = {
     **{key: value[0] for key, value in REPORTS.items()},
     "doctor": "Run health checks",
     "update": "Update workspace",
+    "setup": "Set up workspace",
+    "install": "Install repo",
+    "reset": "Reset repo",
+    "uninstall": "Uninstall repo",
+    "release": "Check releases",
+    "device": "Manage devices",
+    "diagram": "Work with diagrams",
+    "run": "Run a custom command",
+    "data-refine": "Prepare robot data",
+    "agent": "Manage the host agent",
+    "archive": "Manage archive services",
+    "build": "Build workspace packages",
+    "data-annotate": "Annotate robot data",
+    "data-archive": "Manage archived data",
+    "data-hands": "Track hands in recordings",
+    "data-pack": "Build a dataset release pack",
+    "data-process": "Process a recording",
+    "data-showcase": "Prepare an episode showcase",
+    "dataset": "Process recorded episodes",
+    "dataset-release": "Inspect dataset releases",
+    "demo": "Try the Desktop demo",
+    "desktop": "Open Desktop",
+    "desktop-check": "Check Desktop",
+    "design-audit": "Check design rules",
+    "design-review": "Review design changes",
+    "episode": "Work with recorded episodes",
+    "flash": "Prepare boot media",
+    "foxglove": "Connect Foxglove",
+    "glove-receiver": "Manage glove receivers",
+    "isaac-sim": "Start Isaac Sim",
+    "lidar-health": "Check lidar health",
+    "lidar-net": "Configure the lidar network",
+    "lidar-power": "Set lidar power mode",
+    "machine": "View or configure this machine",
+    "new-surface": "Create a Desktop view",
+    "package-plugin": "Build the team plugin",
+    "pkg": "Install a package",
+    "policy": "Train and evaluate policies",
+    "process": "Manage data processing",
+    "rig-health": "Check recording rig health",
+    "rig-load": "Check recording rig load",
+    "robot": "Manage a robot",
+    "setup-add-user": "Add a machine user",
+    "setup-backup": "Back up machine data",
+    "setup-check": "Check machine setup",
+    "setup-onboard": "Set up your account",
+    "setup-robot-sudo": "Configure robot service access",
+    "sim": "Start a robot simulation",
+    "stack": "Manage the robot stack",
+    "teleop": "Control a robot arm",
+    "ui-audit": "Check the Desktop interface",
+    "view-robot": "View a robot model",
+}
+
+
+DESCRIPTIONS = {
+    "list": "Select a repo, inspect its status, and choose an action.",
+    "status": "See branches and local changes across your repos.",
+    "doctor": "Check the workspace and find problems that need attention.",
+    "root": "See where your workspace is stored.",
+    "commands": "Browse all available actions by name.",
+    "install": "Choose a repo and install its tools.",
+    "reset": "Choose a repo and reset its local setup.",
+    "uninstall": "Choose a repo and remove its installed tools.",
 }
 
 
@@ -195,6 +260,8 @@ class Session:
     query: str = ""
     selected: int = 0
     arguments: dict[str, str] = field(default_factory=dict)
+    repo: str = ""
+    repo_action: int = 0
     last: Launch | None = None
     result: tuple[int, str] | None = None
 
@@ -206,6 +273,104 @@ class TaskScreen(Screen):
         self.app.pop_screen()
 
 
+class Repositories(TaskScreen):
+    def action_back(self) -> None:
+        self.app.session.repo = ""
+        super().action_back()
+
+    def compose(self) -> ComposeResult:
+        yield Static("Home / List of repos", classes="heading")
+        yield Static("Select a repo to see its location and available actions.")
+        yield OptionList(
+            *[
+                Text(
+                    f"{repo.name}  ·  {'On this machine' if (repo.checkout(self.app.root) / '.git').exists() else 'Not cloned'}"
+                )
+                for repo in REPOS
+            ],
+            id="repos",
+        )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        menu = self.query_one(OptionList)
+        menu.highlighted = next(
+            (i for i, repo in enumerate(REPOS) if repo.name == self.app.session.repo), 0
+        )
+        menu.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        repo = REPOS[event.option_index]
+        if self.app.session.repo != repo.name:
+            self.app.session.repo_action = 0
+        self.app.session.repo = repo.name
+        self.app.push_screen(RepositoryActions(repo))
+
+
+class RepositoryActions(TaskScreen):
+    def __init__(self, repo: Repo) -> None:
+        super().__init__()
+        self.repo = repo
+        self.actions: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        path = self.repo.checkout(self.app.root)
+        yield Static(
+            f"List of repos / {self.repo.name}", classes="heading", markup=False
+        )
+        yield Static(safe_text(path), markup=False)
+        yield Static("Choose an action for this repo.")
+        self.actions = [
+            {"verb": "status", "repo": self.repo.name, "help": "View repo status"}
+        ]
+        if (path / "install.sh").is_file() and self.repo.applies_to(current_platform()):
+            self.actions.extend(
+                dict(row, target=self.repo.name)
+                for verb in ("install", "reset", "uninstall")
+                for row in self.app.rows
+                if row["verb"] == verb
+            )
+        self.actions.extend(
+            row
+            for row in self.app.rows
+            if row["repo"] == self.repo.name and row["kind"] == "manifest"
+        )
+        if not (path / ".git").exists():
+            yield Static(
+                "This repo is not cloned. Use Set up workspace to add missing repos."
+            )
+            self.actions.extend(row for row in self.app.rows if row["verb"] == "setup")
+        yield OptionList(
+            *[
+                Text(
+                    "View repo status"
+                    if row["verb"] == "status"
+                    else safe_text(title(row))
+                )
+                for row in self.actions
+            ],
+            id="repo-actions",
+        )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        menu = self.query_one(OptionList)
+        menu.highlighted = min(self.app.session.repo_action, len(self.actions) - 1)
+        menu.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.app.session.repo_action = event.option_index
+        row = self.actions[event.option_index]
+        if row["verb"] == "status":
+            self.app.push_screen(
+                Result(Launch(REPORTS["status"][1]), report=True, repo=self.repo.name)
+            )
+        else:
+            self.app.push_screen(Form(row))
+
+
 class Form(TaskScreen):
     def __init__(self, row: dict) -> None:
         super().__init__()
@@ -214,12 +379,17 @@ class Form(TaskScreen):
     def compose(self) -> ComposeResult:
         verb = self.row["verb"]
         yield Static(
-            f"FIRST MOTIVE / {LABELS.get(verb, verb)}", classes="heading", markup=False
+            safe_text(f"FIRST MOTIVE / {title(self.row)}"),
+            classes="heading",
+            markup=False,
         )
         with VerticalScroll():
             yield Static(safe_text(sentence(self.row["help"])), markup=False)
             yield Label("Workspace")
             yield Static(safe_text(self.app.root), markup=False)
+            if self.row.get("target"):
+                yield Label("Repo")
+                yield Static(self.row["target"], markup=False)
             if verb == "update":
                 yield Static(
                     "Pull cloned repositories and run their update scripts. This changes local checkouts and can use the network.",
@@ -228,9 +398,11 @@ class Form(TaskScreen):
             else:
                 yield Label("Arguments (advanced)")
                 yield Input(
-                    self.app.session.arguments.get(verb, ""),
+                    self.app.session.arguments.get(self.argument_key, ""),
                     id="arguments",
-                    placeholder="Arguments after fm " + verb,
+                    placeholder="Optional installer options"
+                    if self.row.get("target")
+                    else "Arguments after fm " + verb,
                 )
                 yield Static(
                     "Use quotes for spaces. No shell expansion or pipes. Do not enter credentials. Targets and effects are owned by this command."
@@ -247,8 +419,12 @@ class Form(TaskScreen):
         else:
             self.query_one("#back", Button).focus()
 
+    @property
+    def argument_key(self) -> str:
+        return f"{self.row['verb']}:{self.row.get('target', '')}"
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        self.app.session.arguments[self.row["verb"]] = event.value
+        self.app.session.arguments[self.argument_key] = event.value
         if event.value:
             self.query_one("#error", Static).update("")
 
@@ -259,7 +435,11 @@ class Form(TaskScreen):
             verb = self.row["verb"]
             try:
                 argv = (
-                    (verb, *shlex.split(self.query_one(Input).value))
+                    (
+                        verb,
+                        *((self.row["target"],) if self.row.get("target") else ()),
+                        *shlex.split(self.query_one(Input).value),
+                    )
                     if self.query(Input)
                     else (verb,)
                 )
@@ -286,10 +466,12 @@ class Review(TaskScreen):
         super().__init__()
         self.launch, self.row, self.report = launch, row, report
         self.confirm = not report and row["verb"] != "update"
+        self.confirmation = row.get("target") or command_text(launch.argv)
 
     def compose(self) -> ComposeResult:
         yield Static("FIRST MOTIVE / Review action", classes="heading")
         with VerticalScroll():
+            yield Static(safe_text(title(self.row)), classes="heading", markup=False)
             yield Label("Command")
             yield Static(command_text(self.launch.argv), id="preview", markup=False)
             yield Label("Target workspace")
@@ -320,9 +502,13 @@ class Review(TaskScreen):
             )
             if self.confirm:
                 yield Label(
-                    "Confirm the target and effects: type the exact command above"
+                    f"Type {self.row['target']} to confirm this repo"
+                    if self.row.get("target")
+                    else "Confirm the target and effects: type the exact command above"
                 )
-                yield Input(id="confirmation", placeholder="fm ...")
+                yield Input(
+                    id="confirmation", placeholder=self.row.get("target", "fm ...")
+                )
             yield Static("", id="error", markup=False)
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -337,11 +523,12 @@ class Review(TaskScreen):
         if event.button.id == "cancel":
             self.action_back()
         elif event.button.id == "run":
-            if self.confirm and self.query_one(
-                "#confirmation", Input
-            ).value != command_text(self.launch.argv):
+            if (
+                self.confirm
+                and self.query_one("#confirmation", Input).value != self.confirmation
+            ):
                 self.query_one("#error", Static).update(
-                    "Confirmation does not match the command. Check its target and arguments."
+                    "Confirmation does not match. Check the target and effects."
                 )
                 self.query_one(Input).focus()
                 return
@@ -359,15 +546,25 @@ class Result(TaskScreen):
         launch: Launch,
         report: bool = False,
         result: tuple[int, str] | None = None,
+        repo: str = "",
     ) -> None:
         super().__init__()
         self.launch, self.report, self.result = launch, report, result
+        self.repo = repo
         self.process: asyncio.subprocess.Process | None = None
         self.running = report
         self.interrupted = False
 
     def compose(self) -> ComposeResult:
-        yield Static(command_text(self.launch.argv), classes="heading", markup=False)
+        row = next(
+            (row for row in self.app.rows if row["verb"] == self.launch.argv[0]),
+            {"verb": self.launch.argv[0], "help": "Action result"},
+        )
+        yield Static(
+            safe_text(f"{self.repo} / {title(row)}" if self.repo else title(row)),
+            classes="heading",
+            markup=False,
+        )
         yield Static("Running…" if self.running else "", id="outcome", markup=False)
         yield RichLog(
             id="output",
@@ -383,7 +580,7 @@ class Result(TaskScreen):
             interrupt = Button("Interrupt", id="interrupt")
             interrupt.display = self.running
             yield interrupt
-            if self.launch.argv[0] == "status":
+            if self.launch.argv[0] == "status" and not self.repo:
                 yield Button("Fetch remote refs", id="fetch", disabled=self.running)
         yield Footer()
 
@@ -439,7 +636,9 @@ class Result(TaskScreen):
                 raise ValueError("The command returned no report.")
             message = stderr.decode(errors="replace")
             if self.launch.argv[0] == "status":
-                message += "\nRemote state uses cached refs. Fetch remote refs to refresh them."
+                message += "\nRemote state uses cached refs."
+                if not self.repo:
+                    message += " Fetch remote refs to refresh them."
             self.finish(code, message)
         except (OSError, ValueError) as exc:
             self.finish(3, str(exc))
@@ -460,7 +659,15 @@ class Result(TaskScreen):
             for key, value in data.items():
                 output.write(Text(f"{safe_text(key)}: {safe_text(value)}"))
             return
-        rows = data
+        rows = (
+            [
+                row
+                for row in data
+                if isinstance(row, dict) and row.get("name") == self.repo
+            ]
+            if self.repo
+            else data
+        )
         if not rows:
             output.write("No entries.")
             return
@@ -472,9 +679,9 @@ class Result(TaskScreen):
             order = list(LEVELS)
             rows = sorted(
                 rows,
-                key=lambda row: order.index(row.get("level"))
-                if row.get("level") in order
-                else 0,
+                key=lambda row: (
+                    order.index(row.get("level")) if row.get("level") in order else 0
+                ),
             )
             counts = Counter(row.get("level") for row in rows)
             output.write(
@@ -502,9 +709,7 @@ class Result(TaskScreen):
                             if isinstance(row.get(key), (list, dict))
                             else row.get(key, "—")
                         ),
-                        style=LEVELS.get(row.get(key), "")
-                        if key == "level"
-                        else "",
+                        style=LEVELS.get(row.get(key), "") if key == "level" else "",
                     )
                     for key in columns
                 ]
@@ -537,11 +742,17 @@ class Result(TaskScreen):
         elif event.button.id == "again" and self.launch.argv in (
             argv for _, argv in REPORTS.values()
         ):
-            self.app.switch_screen(Result(self.launch, report=True))
+            self.app.switch_screen(Result(self.launch, report=True, repo=self.repo))
         elif event.button.id == "again":
             row = next(
                 row for row in self.app.rows if row["verb"] == self.launch.argv[0]
             )
+            if (
+                self.app.session.repo
+                and self.launch.argv[0] in ("install", "reset", "uninstall")
+                and len(self.launch.argv) > 1
+            ):
+                row = dict(row, target=self.launch.argv[1])
             self.app.push_screen(Review(self.launch, row, report=self.report))
 
 
@@ -558,6 +769,7 @@ class FmApp(App[Launch]):
     #identity {{ height: 1; color: {SAND}; }}
     #logo {{ height: auto; color: {LILAC}; margin: 1 0; }}
     .heading {{ height: auto; text-style: bold; margin: 1 0; }}
+    #repos, #repo-actions {{ height: 1fr; border: none; background: {PLUM}; }}
     #search {{ height: 3; margin: 0; }}
     #body {{ height: 1fr; }}
     #tasks {{ width: 1fr; height: 1fr; border: none; background: {PLUM}; text-wrap: nowrap; text-overflow: ellipsis; }}
@@ -614,7 +826,7 @@ class FmApp(App[Launch]):
         yield Static("What do you want to do?", id="heading", classes="heading")
         yield Input(
             self.session.query,
-            placeholder="Search tasks or commands",
+            placeholder="Find a task",
             id="search",
             # Typing in the menu moves its first character here; keep it.
             select_on_focus=False,
@@ -644,6 +856,19 @@ class FmApp(App[Launch]):
             launch, result = self.session.last, self.session.result
             self.session.result = None
             row = next((r for r in self.rows if r["verb"] == launch.argv[0]), None)
+            if self.session.repo:
+                repo = next(
+                    (repo for repo in REPOS if repo.name == self.session.repo), None
+                )
+                if repo:
+                    self.push_screen(Repositories())
+                    self.push_screen(RepositoryActions(repo))
+                    if (
+                        row
+                        and launch.argv[0] in ("install", "reset", "uninstall")
+                        and len(launch.argv) > 1
+                    ):
+                        row = dict(row, target=launch.argv[1])
             if row:
                 self.push_screen(Form(row))
             self.push_screen(Result(launch, result=result))
@@ -689,15 +914,10 @@ class FmApp(App[Launch]):
             self.menu_items = list(GROUPS)
         menu = self.screen_stack[0].query_one("#tasks", OptionList)
         menu.clear_options()
-        width = max((len(r["verb"]) for r in self.rows), default=0)
         menu.add_options(
             [
                 Text(
-                    safe_text(
-                        GROUPS[item][0]
-                        if isinstance(item, str)
-                        else f"fm {item['verb']:<{width}}  {title(item)}"
-                    )
+                    safe_text(GROUPS[item][0] if isinstance(item, str) else title(item))
                 )
                 for item in self.menu_items
             ]
@@ -714,7 +934,7 @@ class FmApp(App[Launch]):
         )
         if not self.menu_items:
             self.screen_stack[0].query_one("#details", Static).update(
-                "No matching commands. Escape clears search. Browse all commands for setup options."
+                "No matching actions. Press Escape to clear the search."
             )
         self.resize_home()
 
@@ -726,6 +946,8 @@ class FmApp(App[Launch]):
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted
     ) -> None:
+        if self.screen is not self.screen_stack[0]:
+            return
         self.session.selected = event.option_index
         if event.option_index >= len(self.menu_items):
             return
@@ -733,7 +955,7 @@ class FmApp(App[Launch]):
         description = (
             GROUPS[item][1]
             if isinstance(item, str)
-            else f"{sentence(item['help'])}\nOwner: {item['repo']}\n{command_text(REPORTS[item['verb']][1] if item['verb'] in REPORTS else (item['verb'],))}"
+            else DESCRIPTIONS.get(item["verb"], sentence(item["help"]))
         )
         self.screen_stack[0].query_one("#details", Static).update(
             safe_text(description)
@@ -758,6 +980,18 @@ class FmApp(App[Launch]):
         if isinstance(item, str):
             self.session.category, self.session.selected = item, 0
             self.fill_menu()
+        elif item["verb"] == "list":
+            self.push_screen(Repositories())
+        elif item["verb"] == "commands":
+            self.session.category, self.session.query, self.session.selected = (
+                "all",
+                "",
+                0,
+            )
+            self.screen_stack[0].query_one("#search", Input).value = ""
+            self.fill_menu()
+        elif item["verb"] in ("install", "reset", "uninstall"):
+            self.push_screen(Repositories())
         elif item["verb"] in REPORTS:
             self.push_screen(Result(Launch(REPORTS[item["verb"]][1]), report=True))
         elif item["verb"] == "doctor":
