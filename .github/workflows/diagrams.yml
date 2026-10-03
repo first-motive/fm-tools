@@ -1,8 +1,5 @@
 name: Diagrams
 
-# Its own workflow, not a job in ci.yml, because ci.yml ignores `docs/**` — and
-# docs is exactly where the diagrams live. A diagram change is a docs change; a
-# check that skips docs would never grade one.
 on:
   pull_request:
 
