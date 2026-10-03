@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fm-tools"
-version = "0.26.0"
+version = "0.27.0"
 description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,7 +16,11 @@ classifiers = ["License :: OSI Approved :: Apache Software License"]
 authors = [{ name = "First Motive", email = "nish@ubundi.co.za" }]
 # Pure-Python, no rclpy: any First Motive repo can pip install this from a git
 # tag without a ROS environment on the path.
-dependencies = ["textual>=0.74", "rich"]
+dependencies = [
+    "textual>=0.74",
+    "rich",
+    "pyte>=0.8.2",
+]
 
 # fm: the read-only cross-repo dispatcher (list/status/doctor).
 # fm-pick: a shell script reads the chosen option from stdout —

@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not argv:
         if sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb":
-            from fm_tools.tui.app import run_tui
+            from fm_tools.tui.workspace import run_tui
 
             return run_tui(root, discovery)
         _build_parser(discovery.commands, version=version_line(root)).print_help()

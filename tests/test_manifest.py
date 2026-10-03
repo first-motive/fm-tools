@@ -24,7 +24,9 @@ def _script(checkout, rel_path, body="#!/bin/sh\nexit 0\n", executable=True):
 def _manifest(root, repo, commands, version=1):
     checkout = root / repo.local_dir
     checkout.mkdir(parents=True, exist_ok=True)
-    (checkout / "fm.json").write_text(json.dumps({"version": version, "commands": commands}))
+    (checkout / "fm.json").write_text(
+        json.dumps({"version": version, "commands": commands})
+    )
     return checkout
 
 
@@ -34,15 +36,19 @@ def test_no_manifest_is_not_a_problem(tmp_path):
     assert problems == []
 
 
-def test_sibling_data_clone_is_discovered_and_reported_consistently(tmp_path, monkeypatch, capsys):
+def test_sibling_data_clone_is_discovered_and_reported_consistently(
+    tmp_path, monkeypatch, capsys
+):
     import subprocess
 
     checkout = tmp_path / "fm-data"
     checkout.mkdir()
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-    (checkout / "fm.json").write_text(json.dumps({"version": 1, "commands": {
-        "data-archive": {"script": "archive.sh"}
-    }}))
+    (checkout / "fm.json").write_text(
+        json.dumps(
+            {"version": 1, "commands": {"data-archive": {"script": "archive.sh"}}}
+        )
+    )
     _script(checkout, "archive.sh")
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     assert discover(tmp_path).commands["data-archive"].cwd == checkout
@@ -54,19 +60,27 @@ def test_sibling_data_clone_is_discovered_and_reported_consistently(tmp_path, mo
     assert next(r for r in rows if r["name"] == "fm-data")["cloned"]
     main(["doctor", "--no-fetch", "--json"])
     rows = json.loads(capsys.readouterr().out)["data"]
-    assert next(r for r in rows if r["repo"] == "fm-data" and r["kind"] == "clone")["ok"]
+    assert next(r for r in rows if r["repo"] == "fm-data" and r["kind"] == "clone")[
+        "ok"
+    ]
 
 
 @pytest.mark.parametrize("arguments", ["preflight", [1], ["a\x00b"]])
 def test_healthcheck_arguments_are_validated(tmp_path, arguments):
-    _manifest(tmp_path, FM_ROS2, {"archive": {"script": "archive.sh", "healthcheck": arguments}})
+    _manifest(
+        tmp_path,
+        FM_ROS2,
+        {"archive": {"script": "archive.sh", "healthcheck": arguments}},
+    )
     commands, problems = load_manifest(FM_ROS2, tmp_path)
     assert not commands and problems[0].kind == "schema"
 
 
 def test_declared_command_mounts_as_a_verb(tmp_path):
     checkout = _manifest(
-        tmp_path, FM_ROS2, {"teleop": {"script": "scripts/run/teleop.sh", "help": "drive"}}
+        tmp_path,
+        FM_ROS2,
+        {"teleop": {"script": "scripts/run/teleop.sh", "help": "drive"}},
     )
     _script(checkout, "scripts/run/teleop.sh")
 
@@ -88,7 +102,9 @@ def test_unparseable_manifest_is_reported_not_raised(tmp_path):
 
 
 def test_unknown_schema_version_is_rejected(tmp_path):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}}, version=99)
+    checkout = _manifest(
+        tmp_path, FM_ROS2, {"teleop": {"script": "run.sh"}}, version=99
+    )
     _script(checkout, "run.sh")
 
     discovery = discover(tmp_path)
@@ -125,6 +141,25 @@ def test_non_executable_script_is_reported(tmp_path):
 
     discovery = discover(tmp_path)
     assert [problem.kind for problem in discovery.problems] == ["exec"]
+
+
+@pytest.mark.parametrize(
+    "controls",
+    [
+        "invalid",
+        [{}],
+        [{"title": "Run", "path": ["--unsafe"]}],
+        [{"title": "Run", "fields": [{"key": "bad id", "label": "Name"}]}],
+    ],
+)
+def test_invalid_tui_controls_are_reported_without_unmounting_cli(tmp_path, controls):
+    checkout = _manifest(
+        tmp_path, FM_ROS2, {"sample": {"script": "run.sh", "tui": controls}}
+    )
+    _script(checkout, "run.sh")
+    found = discover(tmp_path)
+    assert "sample" in found.commands
+    assert any(p.kind == "schema" and "tui" in p.detail for p in found.problems)
 
 
 def test_unknown_group_still_mounts_but_is_reported(tmp_path):
@@ -185,7 +220,9 @@ def test_builtin_verb_still_wins_via_main(tmp_path, monkeypatch, capsys):
 
 
 def test_help_lists_repo_commands(tmp_path, monkeypatch, capsys):
-    checkout = _manifest(tmp_path, FM_ROS2, {"teleop": {"script": "run.sh", "help": "drive"}})
+    checkout = _manifest(
+        tmp_path, FM_ROS2, {"teleop": {"script": "run.sh", "help": "drive"}}
+    )
     _script(checkout, "run.sh")
     monkeypatch.setenv("FM_HOME", str(tmp_path))
 

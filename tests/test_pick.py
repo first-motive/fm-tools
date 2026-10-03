@@ -228,8 +228,19 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     checkout = tmp_path / next(r.local_dir for r in REPOS if r.name == "fm-ros2")
     checkout.mkdir(parents=True)
     script = checkout / "sample.sh"
+    import shlex
+
+    nested = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            'from fm_tools.tui.pick import pick; print("FM_NESTED_CHOICE=" + str(pick("Choose mode", ["one", "two"])))',
+        ]
+    )
     script.write_text(
-        '#!/bin/sh\nprintf "FM_CHILD_READY\\n"\nread answer\nprintf "FM_CHILD_INPUT=%s\\n" "$answer"\nexit 7\n'
+        '#!/bin/sh\nprintf "FM_CHILD_READY\\n"\nread answer\nprintf "FM_CHILD_INPUT=%s\\n" "$answer"\n'
+        + nested
+        + "\nexit 7\n"
     )
     script.chmod(0o755)
     (checkout / "fm.json").write_text(
@@ -237,7 +248,11 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
             {
                 "version": 1,
                 "commands": {
-                    "sample": {"script": "sample.sh", "help": "Terminal verification"}
+                    "sample": {
+                        "script": "sample.sh",
+                        "help": "Terminal verification",
+                        "tui": [{"title": "Terminal verification", "path": []}],
+                    }
                 },
             }
         )
@@ -273,7 +288,8 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                     break
                 transcript.extend(data)
                 received.extend(data)
-                if text.encode() in received:
+                visible = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", received)
+                if text.encode() in visible:
                     return
         raise AssertionError(
             f"Terminal did not show {text!r}; tail: {received[-1800:]!r}"
@@ -285,35 +301,33 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
             time.sleep(0.1)
 
     try:
-        expect("What do you want to do?")
-        send("/")
-        send("sample")
-        send("\x1b[B\r")
-        expect("Arguments (advanced)")
-        send("\t\t\r")
-        expect("FIRST MOTIVE / Review action")
-        send("\x1b[Z")  # Cancel defaults to focus; Shift+Tab reaches confirmation.
-        send("fm sample")
-        send("\t\t\r")
+        expect("Repositories")
+        send("\x17")
+        send("Terminal verification\r")
+        expect("Run workflow")
+        send("\t\r")
         expect("FM_CHILD_READY")
-        send("hello\n")
-        expect("Command exited with code 7")
-        send("\n")
+        send("\x12hello\r")
+        expect("SELECT")
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
+        os.kill(pid, signal.SIGWINCH)
+        send("\x1b[B\r")
         expect("Failed")
-        send("\x1b")
-        expect("Arguments (advanced)")
-        # Retry with a child that waits for terminal SIGINT.
+        assert b"FM_NESTED_CHOICE=two" in re.sub(
+            rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript
+        )
         script.write_text(
             '#!/bin/sh\ntrap "exit 130" INT\nprintf "FM_CHILD_WAITING\\n"\nread answer\n'
         )
-        send("\t\t\r")
-        expect("FIRST MOTIVE / Review action")
-        send("\x1b[Zfm sample\t\t\r")
+        send("\x17")
+        send("Terminal verification\r")
+        expect("Run workflow")
+        send("\t\r")
         expect("FM_CHILD_WAITING")
         send("\x03")
-        expect("Command exited with code 130")
-        send("\n")
-        expect("Interrupted")
+        expect("Stop this workflow")
+        send("\t\r")
+        expect("Stopped")
         send("\x11")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -340,3 +354,213 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         artifact = Path(os.environ.get("FM_TUI_EVIDENCE_DIR", str(tmp_path)))
         artifact.mkdir(parents=True, exist_ok=True)
         (artifact / "terminal-session.ansi").write_bytes(transcript)
+
+
+async def test_workspace_keeps_report_and_detail_inside_app(tmp_path, monkeypatch):
+    from textual.widgets import DataTable, Input, Static
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.tui.workspace import WorkspaceApp
+
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    app = WorkspaceApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.query_one("#results", DataTable).row_count > 0
+        assert not app.query("#arguments"), (
+            "The interface must not ask for CLI arguments"
+        )
+        await pilot.click("#nav-health")
+        await pilot.click("#run-health")
+        await pilot.click("#confirm-run")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.query_one("#results", DataTable).row_count > 0
+        assert "fail" in str(app.query_one("#summary", Static).render()).lower()
+        assert not any(widget.region.height for widget in app.query(Input)), (
+            "Health checks require no typed input"
+        )
+        await pilot.click("#nav-repos")
+        assert app.query_one("#results", DataTable).row_count > 0
+        app.save_screenshot(str(tmp_path / "workspace-health.svg"))
+
+
+async def test_workspace_updates_selected_repo_without_a_shell(tmp_path, monkeypatch):
+    import subprocess
+    from textual.widgets import DataTable, Static
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.tui.workspace import WorkspaceApp
+
+    origin = tmp_path / "origin"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(origin)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(origin),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", str(origin), str(tmp_path / "fm-tools")],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    app = WorkspaceApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.click("#nav-updates")
+        await pilot.click("#run-update")
+        assert "fm-tools" in str(
+            app.screen.query_one("#confirm-summary", Static).render()
+        )
+        await pilot.click("#confirm-run")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Completed" in str(app.query_one("#summary", Static).render())
+        table = app.query_one("#results", DataTable)
+        assert any(
+            "fm-tools" in str(table.get_row_at(i))
+            and "Updated" in str(table.get_row_at(i))
+            for i in range(table.row_count)
+        )
+        assert app.return_value is None, (
+            "An action must not exit the app for a shell handoff"
+        )
+        app.save_screenshot(str(tmp_path / "workspace-update.svg"))
+
+
+async def test_workflow_form_uses_choices_and_literal_values(tmp_path):
+    from textual.widgets import Select, Input, SelectionList, Static
+    from fm_tools.cli.manifest import Discovery
+    from fm_tools.tui.workspace import WorkspaceApp, WorkflowForm
+    from fm_tools.tui.workflows import Action, Field
+
+    action = Action(
+        "example",
+        "Prepare recording",
+        ("sample",),
+        fields=(
+            Field("mode", "Mode", "--mode", choices=("fast", "full")),
+            Field("name", "Recording name", "--name", required=True),
+            Field("dataset.image", "Image source", "--image", default="rgb"),
+            Field(
+                "episode",
+                "Episode",
+                "--episode",
+                exclusive="source",
+                group_required=True,
+            ),
+            Field(
+                "manifest",
+                "Manifest",
+                "--manifest",
+                exclusive="source",
+                group_required=True,
+            ),
+            Field(
+                "profiles",
+                "Profiles",
+                "--profile",
+                choices=("a", "b"),
+                multiple=True,
+                repeat=True,
+            ),
+        ),
+    )
+    app = WorkspaceApp(tmp_path, Discovery({}, []))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await app.workers.wait_for_complete()
+        await app.push_screen(WorkflowForm(action))
+        assert app.screen.query_one("#field-mode", Select).value not in ("fast", "full")
+        app.screen.query_one("#field-mode", Select).value = "fast"
+        app.screen.query_one("#field-name", Input).value = "two words; $(touch never)"
+        app.screen.query_one("#field-profiles", SelectionList).select("b")
+        await pilot.click("#form-continue")
+        assert "Choose one" in str(app.screen.query_one("#form-error", Static).render())
+        app.screen.query_one("#field-episode", Input).value = "episode-1"
+        await pilot.pause(0.4)
+        await pilot.click("#form-continue")
+        assert app.screen.argv == (
+            "sample",
+            "--mode",
+            "fast",
+            "--name",
+            "two words; $(touch never)",
+            "--image",
+            "rgb",
+            "--episode",
+            "episode-1",
+            "--profile",
+            "b",
+        )
+        await pilot.click("#confirm-cancel")
+        assert (
+            app.screen.query_one("#field-name", Input).value
+            == "two words; $(touch never)"
+        )
+        assert not (tmp_path / "never").exists()
+
+
+async def test_workflow_output_failure_and_retry_stay_in_app(tmp_path):
+    from textual.widgets import RichLog, Static
+    from fm_tools.cli.manifest import Command, Discovery
+    from fm_tools.tui.workspace import WorkspaceApp
+    from fm_tools.tui.workflows import Action
+
+    repo = tmp_path / "fm-ai"
+    repo.mkdir()
+    script = repo / "sample.sh"
+    script.write_text('#!/bin/sh\nprintf "Visible progress\\n"\nexit 7\n')
+    script.chmod(0o755)
+    (repo / "fm.json").write_text(
+        '{"version":1,"commands":{"sample":{"script":"sample.sh","help":"Sample"}}}'
+    )
+    command = Command("sample", "fm-ai", script, repo, "Sample")
+    app = WorkspaceApp(tmp_path, Discovery({"sample": command}, []))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await app.workers.wait_for_complete()
+        app.start_action(Action("sample", "Sample", ("sample",)), ("sample",))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Failed" in str(app.query_one("#summary", Static).render())
+        assert "Visible progress" in "".join(
+            line.text for line in app.query_one("#output", RichLog).lines
+        )
+        assert app.query_one("#retry").disabled is False
+        await pilot.click("#retry")
+        await pilot.click("#confirm-cancel")
+        assert app.return_value is None
+        app.show_page("repos")
+        app.start_action(
+            Action(
+                "status",
+                "Read repo state",
+                ("status", "--no-fetch", "--json"),
+                report=True,
+            ),
+            ("status", "--no-fetch", "--json"),
+        )
+        await app.workers.wait_for_complete()
+        app.show_page("activity")
+        await pilot.pause()
+        await pilot.click("#past-results")
+        assert "Sample" in str(
+            app.screen.query_one("#history-options").get_option_at_index(1).prompt
+        )
+        await pilot.press("down", "enter")
+        assert "Visible progress" in str(app.screen.data)
+        app.save_screenshot(str(tmp_path / "workspace-failure.svg"))
