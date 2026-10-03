@@ -1,10 +1,11 @@
 # Plan The FM Terminal Interface
 
-Status: the first release is implemented on `feat/fm-terminal-interface` for
-FM 0.23.0. The initial scope covers the launch logo, task menu, search, workspace
-reports, reviewed update, and terminal execution of discovered commands.
-Stage 3 remains a follow-up based on use. The original plan follows, with the
-approved logo correction: no text below the mark.
+Status: the interface now uses plain-language action menus. **List of repos**
+opens a selectable list, followed by repo actions with a fixed installer target.
+The review screen keeps the exact command visible. Search accepts both task
+names and CLI names. The original design below is historical; its proposal to
+show CLI verbs beside menu rows has been replaced by this navigation.
+Guided device and data forms remain a follow-up based on use.
 
 ## Start With A Task
 
