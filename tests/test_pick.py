@@ -312,7 +312,8 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                 if text in visible:
                     return
         raise AssertionError(
-            f"Terminal did not show {text!r}; tail: {received[-1800:]!r}"
+            f"Terminal did not show {text!r}; screen: {visible!r}; "
+            f"tail: {received[-1800:]!r}"
         )
 
     def send(text):
