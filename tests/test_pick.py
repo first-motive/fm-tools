@@ -129,10 +129,12 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
     app = FmApp(tmp_path, Discovery({}, []))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.press(*"list of repos", "down", "enter")
+        await pilot.pause()
         assert repo.name in str(
             app.screen.query_one(OptionList).get_option_at_index(0).prompt
         )
         await pilot.press("enter")
+        await pilot.pause()
         assert repo.name in str(app.screen.query_one(".heading", Static).render())
         menu = app.screen.query_one(OptionList)
         labels = [
@@ -142,12 +144,23 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
         assert all(not label.startswith("fm ") for label in labels)
         menu.highlighted = labels.index("Install repo")
         await pilot.press("enter")
+        await pilot.pause()
         await pilot.click("#review")
         assert f"fm install {repo.name}" in str(
             app.screen.query_one("#preview", Static).render()
         )
         await pilot.click("#cancel")
-        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert "Install repo" in str(
+            app.screen.query_one(".heading", Static).render()
+        )
+        await pilot.press("escape")
+        await pilot.pause()
+        assert f"List of repos / {repo.name}" in str(
+            app.screen.query_one(".heading", Static).render()
+        )
+        await pilot.press("escape")
+        await pilot.pause()
         assert repo.name in str(
             app.screen.query_one(OptionList).get_option_at_index(0).prompt
         )
@@ -215,6 +228,7 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     import json
     import os
     import pty
+    import pyte
     import re
     import select
     import signal
@@ -272,8 +286,13 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
             ],
         )
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    screen = pyte.Screen(120, 40)
+    stream = pyte.ByteStream(screen)
 
     def expect(text):
+        visible = "\n".join(screen.display)
+        if text in visible:
+            return
         start = time.monotonic()
         received = bytearray()
         while time.monotonic() - start < 12:
@@ -288,8 +307,9 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                     break
                 transcript.extend(data)
                 received.extend(data)
-                visible = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", received)
-                if text.encode() in visible:
+                stream.feed(data)
+                visible = "\n".join(screen.display)
+                if text in visible:
                     return
         raise AssertionError(
             f"Terminal did not show {text!r}; tail: {received[-1800:]!r}"
@@ -307,11 +327,21 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         expect("Run workflow")
         send("\t\r")
         expect("FM_CHILD_READY")
-        send("\x12hello\r")
+        send("\x12hello")
+        expect("•••••")  # Reply text is masked in the terminal.
+        send("\r")
+        expect("FM_CHILD_INPUT=hello")
         expect("SELECT")
+        expect("▸ one")
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
         os.kill(pid, signal.SIGWINCH)
-        send("\x1b[B\r")
+        screen.resize(lines=32, columns=100)
+        screen.reset()
+        expect("SELECT")
+        expect("▸ one")
+        send("\x1b[B")
+        expect("▸ two")
+        send("\r")
         expect("Failed")
         assert b"FM_NESTED_CHOICE=two" in re.sub(
             rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript
