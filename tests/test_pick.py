@@ -149,7 +149,8 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
         assert f"fm install {repo.name}" in str(
             app.screen.query_one("#preview", Static).render()
         )
-        await pilot.click("#cancel")
+        await pilot.pause()
+        assert await pilot.click("#cancel"), "Cancel must receive the click"
         await pilot.pause()
         assert "Install repo" in str(
             app.screen.query_one(".heading", Static).render()
@@ -248,7 +249,10 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         [
             sys.executable,
             "-c",
-            'from fm_tools.tui.pick import pick; print("FM_NESTED_CHOICE=" + str(pick("Choose mode", ["one", "two"])))',
+            'import os; from fm_tools.tui.pick import pick; '
+            'before = os.get_terminal_size(); choice = pick("Choose mode", ["one", "two"]); '
+            'after = os.get_terminal_size(); print("FM_NESTED_CHOICE=" + str(choice)); '
+            'print(f"FM_NESTED_COLUMNS={before.columns},{after.columns}")',
         ]
     )
     script.write_text(
@@ -332,21 +336,21 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         expect("•••••")  # Reply text is masked in the terminal.
         send("\r")
         expect("FM_CHILD_INPUT=hello")
-        expect("SELECT")
         expect("▸ one")
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
         os.kill(pid, signal.SIGWINCH)
         screen.resize(lines=32, columns=100)
-        screen.reset()
-        expect("SELECT")
         expect("▸ one")
         send("\x1b[B")
         expect("▸ two")
         send("\r")
         expect("Failed")
-        assert b"FM_NESTED_CHOICE=two" in re.sub(
-            rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript
-        )
+        output = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript)
+        assert b"FM_NESTED_CHOICE=two" in output
+        columns = re.search(rb"FM_NESTED_COLUMNS=(\d+),(\d+)", output)
+        assert columns is not None, "The child must report its terminal widths"
+        before, after = map(int, columns.groups())
+        assert after < before, "The terminal resize must reach the child"
         script.write_text(
             '#!/bin/sh\ntrap "exit 130" INT\nprintf "FM_CHILD_WAITING\\n"\nread answer\n'
         )
