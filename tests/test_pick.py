@@ -129,10 +129,12 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
     app = FmApp(tmp_path, Discovery({}, []))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.press(*"list of repos", "down", "enter")
+        await pilot.pause()
         assert repo.name in str(
             app.screen.query_one(OptionList).get_option_at_index(0).prompt
         )
         await pilot.press("enter")
+        await pilot.pause()
         assert repo.name in str(app.screen.query_one(".heading", Static).render())
         menu = app.screen.query_one(OptionList)
         labels = [
@@ -142,12 +144,24 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
         assert all(not label.startswith("fm ") for label in labels)
         menu.highlighted = labels.index("Install repo")
         await pilot.press("enter")
+        await pilot.pause()
         await pilot.click("#review")
         assert f"fm install {repo.name}" in str(
             app.screen.query_one("#preview", Static).render()
         )
-        await pilot.click("#cancel")
-        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert await pilot.click("#cancel"), "Cancel must receive the click"
+        await pilot.pause()
+        assert "Install repo" in str(
+            app.screen.query_one(".heading", Static).render()
+        )
+        await pilot.press("escape")
+        await pilot.pause()
+        assert f"List of repos / {repo.name}" in str(
+            app.screen.query_one(".heading", Static).render()
+        )
+        await pilot.press("escape")
+        await pilot.pause()
         assert repo.name in str(
             app.screen.query_one(OptionList).get_option_at_index(0).prompt
         )
@@ -215,6 +229,7 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     import json
     import os
     import pty
+    import pyte
     import re
     import select
     import signal
@@ -234,7 +249,10 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         [
             sys.executable,
             "-c",
-            'from fm_tools.tui.pick import pick; print("FM_NESTED_CHOICE=" + str(pick("Choose mode", ["one", "two"])))',
+            'import os; from fm_tools.tui.pick import pick; '
+            'before = os.get_terminal_size(); choice = pick("Choose mode", ["one", "two"]); '
+            'after = os.get_terminal_size(); print("FM_NESTED_CHOICE=" + str(choice)); '
+            'print(f"FM_SIZE={before.columns},{after.columns}")',
         ]
     )
     script.write_text(
@@ -260,20 +278,35 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("FM_TUI_ASCII", "1")
+    # The PTY owns the size; inherited shell dimensions override its resize.
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.delenv("LINES", raising=False)
     transcript = bytearray()
     pid, master = pty.fork()
     if pid == 0:
-        os.execv(
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        os.execve(
             sys.executable,
             [
                 sys.executable,
                 "-c",
                 "from fm_tools.cli import main; raise SystemExit(main())",
             ],
+            dict(os.environ),
         )
-    fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    screen = pyte.Screen(120, 40)
+    stream = pyte.ByteStream(screen)
 
-    def expect(text):
+    def expect(text, *, right_border=False):
+        visible = "\n".join(screen.display)
+        if any(
+            text in line
+            and (
+                not right_border or "┃" in line.partition(text)[2]
+            )
+            for line in screen.display
+        ):
+            return
         start = time.monotonic()
         received = bytearray()
         while time.monotonic() - start < 12:
@@ -288,11 +321,19 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                     break
                 transcript.extend(data)
                 received.extend(data)
-                visible = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", received)
-                if text.encode() in visible:
+                stream.feed(data)
+                visible = "\n".join(screen.display)
+                if any(
+                    text in line
+                    and (
+                        not right_border or "┃" in line.partition(text)[2]
+                    )
+                    for line in screen.display
+                ):
                     return
         raise AssertionError(
-            f"Terminal did not show {text!r}; tail: {received[-1800:]!r}"
+            f"Terminal did not show {text!r}; screen: {visible!r}; "
+            f"tail: {received[-1800:]!r}"
         )
 
     def send(text):
@@ -307,15 +348,26 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         expect("Run workflow")
         send("\t\r")
         expect("FM_CHILD_READY")
-        send("\x12hello\r")
-        expect("SELECT")
+        send("\x12hello")
+        expect("•••••")  # Reply text is masked in the terminal.
+        send("\r")
+        expect("FM_CHILD_INPUT=hello")
+        expect("▸ one")
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
         os.kill(pid, signal.SIGWINCH)
-        send("\x1b[B\r")
+        screen.resize(lines=32, columns=100)
+        # The old child border is off-screen. Its new position proves a redraw.
+        expect("▸ one", right_border=True)
+        send("\x1b[B")
+        expect("▸ two")
+        send("\r")
         expect("Failed")
-        assert b"FM_NESTED_CHOICE=two" in re.sub(
-            rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript
-        )
+        output = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript)
+        assert b"FM_NESTED_CHOICE=two" in output
+        columns = re.search(rb"FM_SIZE=(\d+),(\d+)", output)
+        assert columns is not None, "The child must report its terminal widths"
+        before, after = map(int, columns.groups())
+        assert after < before, "The terminal resize must reach the child"
         script.write_text(
             '#!/bin/sh\ntrap "exit 130" INT\nprintf "FM_CHILD_WAITING\\n"\nread answer\n'
         )

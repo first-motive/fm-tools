@@ -653,7 +653,6 @@ class WorkspaceApp(App):
     def on_resize(self):
         if self.is_mounted:
             self.resize_layout()
-            self.call_after_refresh(self.resize_terminal)
 
     def refresh_progress(self):
         if self.running:

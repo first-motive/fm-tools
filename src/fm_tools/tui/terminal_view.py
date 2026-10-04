@@ -97,6 +97,9 @@ class TerminalView(Static, can_focus=True):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+    def on_resize(self):
+        self.app.resize_terminal()
+
     def feed(self, data):
         self.screen_data.transcript = []
         self.stream.feed(data)
