@@ -285,13 +285,14 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     pid, master = pty.fork()
     if pid == 0:
         fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        os.execv(
+        os.execve(
             sys.executable,
             [
                 sys.executable,
                 "-c",
                 "from fm_tools.cli import main; raise SystemExit(main())",
             ],
+            dict(os.environ),
         )
     screen = pyte.Screen(120, 40)
     stream = pyte.ByteStream(screen)
