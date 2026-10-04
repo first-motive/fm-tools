@@ -252,7 +252,7 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
             'import os; from fm_tools.tui.pick import pick; '
             'before = os.get_terminal_size(); choice = pick("Choose mode", ["one", "two"]); '
             'after = os.get_terminal_size(); print("FM_NESTED_CHOICE=" + str(choice)); '
-            'print(f"FM_NESTED_COLUMNS={before.columns},{after.columns}")',
+            'print(f"FM_SIZE={before.columns},{after.columns}")',
         ]
     )
     script.write_text(
@@ -278,6 +278,9 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     monkeypatch.setenv("FM_HOME", str(tmp_path))
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("FM_TUI_ASCII", "1")
+    # The PTY owns the size; inherited shell dimensions override its resize.
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.delenv("LINES", raising=False)
     transcript = bytearray()
     pid, master = pty.fork()
     if pid == 0:
@@ -293,9 +296,15 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     screen = pyte.Screen(120, 40)
     stream = pyte.ByteStream(screen)
 
-    def expect(text):
+    def expect(text, *, right_border=False):
         visible = "\n".join(screen.display)
-        if text in visible:
+        if any(
+            text in line
+            and (
+                not right_border or "┃" in line.partition(text)[2]
+            )
+            for line in screen.display
+        ):
             return
         start = time.monotonic()
         received = bytearray()
@@ -313,7 +322,13 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                 received.extend(data)
                 stream.feed(data)
                 visible = "\n".join(screen.display)
-                if text in visible:
+                if any(
+                    text in line
+                    and (
+                        not right_border or "┃" in line.partition(text)[2]
+                    )
+                    for line in screen.display
+                ):
                     return
         raise AssertionError(
             f"Terminal did not show {text!r}; screen: {visible!r}; "
@@ -340,14 +355,15 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 100, 0, 0))
         os.kill(pid, signal.SIGWINCH)
         screen.resize(lines=32, columns=100)
-        expect("▸ one")
+        # The old child border is off-screen. Its new position proves a redraw.
+        expect("▸ one", right_border=True)
         send("\x1b[B")
         expect("▸ two")
         send("\r")
         expect("Failed")
         output = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", transcript)
         assert b"FM_NESTED_CHOICE=two" in output
-        columns = re.search(rb"FM_NESTED_COLUMNS=(\d+),(\d+)", output)
+        columns = re.search(rb"FM_SIZE=(\d+),(\d+)", output)
         assert columns is not None, "The child must report its terminal widths"
         before, after = map(int, columns.groups())
         assert after < before, "The terminal resize must reach the child"
