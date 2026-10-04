@@ -284,6 +284,7 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
     transcript = bytearray()
     pid, master = pty.fork()
     if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         os.execv(
             sys.executable,
             [
@@ -292,7 +293,6 @@ def test_fm_terminal_handoff_and_interrupt(tmp_path, monkeypatch):
                 "from fm_tools.cli import main; raise SystemExit(main())",
             ],
         )
-    fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     screen = pyte.Screen(120, 40)
     stream = pyte.ByteStream(screen)
 
