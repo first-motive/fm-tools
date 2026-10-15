@@ -27,19 +27,21 @@ whatever that person's login name is, so the target carries no user at all and
 from __future__ import annotations
 
 import json as jsonlib
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
 from . import exits
 from .adopt import REF_PATTERN, ref_for, run_adopt
-from .machine import NAME_PATTERN, CardError, read_card
+from .machine import LINUX_PATH, NAME_PATTERN, ROBOT_KINDS, CardError, read_card
 from .payload import emit
 
 # role → the abbreviation its name carries, mirroring fm-setup's
@@ -70,6 +72,8 @@ class Device:
     this_machine: bool = False
     fleet: str = ""
     workspace: str = ""
+    # Which robot a `robot` row is (the card's `robot` field); empty otherwise.
+    kind: str = ""
 
     @property
     def user(self) -> str:
@@ -184,7 +188,104 @@ def _with_local_card(device: Device) -> Device:
         this_machine=True,
         fleet=card.fleet,
         workspace=str(card.workspace),
+        kind=card.robot if card.role == "robot" else "",
     )
+
+
+# How long a robot gets to answer before the listing moves on without it. Short
+# because the listing is what an operator's screen waits on, and a robot that
+# takes longer than this to accept a connection is not one to read a card from.
+KIND_CONNECT_TIMEOUT = 3
+
+
+def _kind_cache_path() -> Path:
+    """Where the last robot kind read from each robot is kept."""
+    cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    base = Path(cache_home) if cache_home else Path.home() / ".cache"
+    return base / "fm" / "device-kinds.json"
+
+
+def _read_kind_cache() -> dict[str, str]:
+    try:
+        data = jsonlib.loads(_kind_cache_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(name): str(kind) for name, kind in data.items() if kind in ROBOT_KINDS}
+
+
+def _write_kind_cache(kinds: dict[str, str]) -> None:
+    path = _kind_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(jsonlib.dumps(kinds, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        # A cache that cannot be written costs the next offline listing a kind,
+        # which is not worth failing this listing over.
+        pass
+
+
+def _remote_kind(device: Device) -> str:
+    """The robot kind a robot's own card declares, or ``""`` when unreadable.
+
+    ``BatchMode`` refuses every prompt and ``ConnectTimeout`` bounds the wait, so
+    a robot that needs a password or does not answer costs seconds, not a hang.
+    A robot runs Linux, so its card is at the Linux path.
+    """
+    try:
+        done = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                f"ConnectTimeout={KIND_CONNECT_TIMEOUT}",
+                device.target,
+                f"cat {LINUX_PATH}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=KIND_CONNECT_TIMEOUT * 2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if done.returncode != 0:
+        return ""
+    try:
+        card = jsonlib.loads(done.stdout)
+    except ValueError:
+        return ""
+    kind = card.get("robot", "") if isinstance(card, dict) else ""
+    return kind if kind in ROBOT_KINDS else ""
+
+
+def with_kinds(found: list[Device]) -> list[Device]:
+    """Fill each robot row's kind: read when online, remembered when not.
+
+    A peer's card is only readable by connecting to it, so an online robot is
+    asked over ssh and the answer is cached. An offline robot is not asked; it
+    reports the kind last read, because a robot does not change what it is by
+    going offline. Only robot rows are touched; every other row keeps ``""``.
+    """
+    cache = _read_kind_cache()
+    learned = dict(cache)
+    result = []
+    for device in found:
+        if device.role != "robot":
+            result.append(device)
+            continue
+        kind = device.kind
+        if not kind and device.online and not device.this_machine:
+            kind = _remote_kind(device)
+        kind = kind or cache.get(device.name, "")
+        if kind:
+            learned[device.name] = kind
+        result.append(replace(device, kind=kind))
+    if learned != cache:
+        _write_kind_cache(learned)
+    return result
 
 
 def devices() -> list[Device]:
@@ -221,6 +322,7 @@ def _payload(found: list[Device]) -> list[dict]:
             "this_machine": device.this_machine,
             "fleet": device.fleet,
             "workspace": device.workspace,
+            "kind": device.kind,
         }
         for device in found
     ]
@@ -470,7 +572,7 @@ def run_device(argv: list[str]) -> int:
     # to fall back to when it is unreachable.
     try:
         if verb == "list":
-            found = devices()
+            found = with_kinds(devices())
             if "--json" in rest:
                 emit("device", _payload(found))
             else:
