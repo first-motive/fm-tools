@@ -45,6 +45,18 @@ STATUS = {
 }
 
 
+# The real reader, kept before the autouse fixture below replaces it, so the
+# tests that exercise it can put it back behind a stubbed ssh.
+REMOTE_KIND = device._remote_kind
+
+
+@pytest.fixture(autouse=True)
+def no_robot_ssh(monkeypatch, tmp_path):
+    """No test reaches a real robot, and none shares a kind cache with the host."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(device, "_remote_kind", lambda found: "")
+
+
 @pytest.fixture
 def tailnet(monkeypatch):
     """A tailnet with two recorders, a workstation, and somebody's phone."""
@@ -393,3 +405,112 @@ def test_a_path_naming_no_pinned_repo_still_gets_the_agents_ref(tailnet, ran):
 def test_a_trailing_slash_still_names_the_repo(tailnet, ran):
     main(["device", "update", "fm-rec-01", "--repo", "~/fm/fm-setup/", "--no-restart"])
     assert f"refs/tags/{ref_for('fm-setup')}" in ran[0][2]
+
+
+# --- robot kind --------------------------------------------------------------
+
+
+class _Done:
+    def __init__(self, returncode, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+@pytest.fixture
+def robot_card(monkeypatch):
+    """Put the real reader back behind an ssh that answers with a robot's card."""
+
+    def answer(stdout, returncode=0):
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            if isinstance(stdout, Exception):
+                raise stdout
+            return _Done(returncode, stdout)
+
+        monkeypatch.setattr(device, "_remote_kind", REMOTE_KIND)
+        monkeypatch.setattr(device.subprocess, "run", fake)
+        return calls
+
+    return answer
+
+
+def _kinds(capsys):
+    rows = json.loads(capsys.readouterr().out)["data"]
+    return {row["name"]: row["kind"] for row in rows}
+
+
+def test_the_local_robot_kind_comes_from_its_card(tmp_path, monkeypatch, capsys):
+    status = {
+        "Self": {"HostName": "fm-rob-02", "DNSName": "fm-rob-02.ts.net.", "Online": True},
+        "Peer": {},
+    }
+    monkeypatch.setattr(device, "_tailscale_status", lambda: status)
+    card = tmp_path / "machine.json"
+    card.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "fm-rob-02",
+                "role": "robot",
+                "robot": "axol",
+                "fleet": "prod",
+                "transport": "zenoh",
+                "workspace": "/home/user/fm",
+            }
+        )
+    )
+    monkeypatch.setenv("FM_MACHINE_FILE", str(card))
+    assert main(["device", "list", "--json"]) == 0
+    assert _kinds(capsys) == {"fm-rob-02": "axol"}
+
+
+def test_a_robot_peer_kind_is_read_from_its_card_over_ssh(tailnet, robot_card, capsys):
+    calls = robot_card(json.dumps({"schema_version": 1, "robot": "anvil-openarm-v2"}))
+    assert main(["device", "list", "--json"]) == 0
+    kinds = _kinds(capsys)
+    assert kinds["fm-rob-01"] == "anvil-openarm-v2"
+    # Only the online robot is asked, without prompts and with a short timeout.
+    assert len(calls) == 1
+    assert "BatchMode=yes" in calls[0]
+    assert f"ConnectTimeout={device.KIND_CONNECT_TIMEOUT}" in calls[0]
+    assert calls[0][-2:] == ["fm-rob-01.tail1234.ts.net", "cat /etc/fm/machine.json"]
+
+
+def test_every_machine_but_a_robot_reports_no_kind(tailnet, robot_card, capsys):
+    robot_card(json.dumps({"robot": "axol"}))
+    assert main(["device", "list", "--json"]) == 0
+    kinds = _kinds(capsys)
+    assert [kinds[name] for name in ("fm-ws-01", "fm-rec-01", "fm-rec-02")] == ["", "", ""]
+
+
+def test_an_offline_robot_reports_the_kind_last_read(monkeypatch, robot_card, capsys):
+    online = json.loads(json.dumps(STATUS))
+    monkeypatch.setattr(device, "_tailscale_status", lambda: online)
+    robot_card(json.dumps({"robot": "anvil-openarm-v2"}))
+    assert main(["device", "list", "--json"]) == 0
+    capsys.readouterr()
+
+    online["Peer"]["key-d"]["Online"] = False
+    calls = robot_card(RuntimeError("an offline robot is never asked"))
+    assert main(["device", "list", "--json"]) == 0
+    assert _kinds(capsys)["fm-rob-01"] == "anvil-openarm-v2"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "stdout, returncode",
+    [
+        ("", 255),  # unreachable, or refused without a key
+        ("not json", 0),
+        (json.dumps({"robot": "toaster"}), 0),  # not a kind this build knows
+        (None, 0),  # ssh outlives its own timeout
+    ],
+)
+def test_an_unreadable_robot_card_reports_no_kind(tailnet, robot_card, capsys, stdout, returncode):
+    if stdout is None:
+        stdout = device.subprocess.TimeoutExpired("ssh", device.KIND_CONNECT_TIMEOUT)
+    robot_card(stdout, returncode)
+    assert main(["device", "list", "--json"]) == 0
+    assert _kinds(capsys)["fm-rob-01"] == ""

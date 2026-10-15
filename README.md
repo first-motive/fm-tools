@@ -505,6 +505,16 @@ user at all and `~/.ssh/config` decides. Machines the tailnet knows that are not
 named the fleet way — phones, personal laptops — are left out rather than listed
 as unknowns nobody can act on.
 
+Each `list --json` row carries `name`, `role`, `user`, `host`, `target`,
+`online`, `addresses`, `this_machine`, `fleet`, `workspace`, and `kind`. `kind`
+is the `robot` field of a robot's identity card (`anvil-openarm-v2` or `axol`),
+and `""` on every other role. The local card is read directly. An online robot
+peer is asked over ssh (`BatchMode=yes`, a 3 s connect timeout, so a robot that
+needs a password or does not answer costs seconds rather than a hang), and the
+answer is cached in `$XDG_CACHE_HOME/fm/device-kinds.json` (default
+`~/.cache/fm/`). An offline robot is not asked; it reports the kind last read,
+or `""` if none was ever read.
+
 ### Robots Log In As The Vendor's Account
 
 A robot has no appliance account. It runs the vendor's OS with the vendor's
