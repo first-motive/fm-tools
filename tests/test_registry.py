@@ -24,6 +24,7 @@ EXPECTED = {
     "fm-policy",
     "fm-desktop",
     "fm-robot-agent",
+    "fm-sim",
     "fm-agent",
     "fm-tools",
 }
