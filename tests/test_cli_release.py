@@ -221,6 +221,8 @@ RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
 # pull it, and has no cut script for --cut to delegate to.
 # fm-agent joins them too: it is deployed by pulling main on the single Mac
 # that hosts it, so there is nothing for a cut tag to gate.
+# fm-sim joins them: its image is published by CI from main, and it has no cut
+# script yet.
 # fm-data and fm-policy join them as well: fm-data is released with the colcon
 # workspace that builds it, and fm-policy has no cut script yet.
 NO_SCRIPTED_RELEASE = {
@@ -230,6 +232,7 @@ NO_SCRIPTED_RELEASE = {
     "fm-agent",
     "fm-data",
     "fm-policy",
+    "fm-sim",
 }
 
 

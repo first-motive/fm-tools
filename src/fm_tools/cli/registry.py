@@ -323,6 +323,17 @@ REPOS: tuple[Repo, ...] = (
         tools=("uv",),
     ),
     _repo(
+        # The simulation layer: sim worlds and the sim agent. No platform
+        # declaration for the same reason as fm-robot-agent: the agent runs on a
+        # Linux sim host, and the `sim` verb it mounts runs from the Mac, which
+        # also hosts a `--host local` run against its own container runtime.
+        #
+        # uv, because scripts/run/sim.sh is `uv run`.
+        "fm-sim",
+        entry_points=("install.sh", "run.sh"),
+        tools=("uv",),
+    ),
+    _repo(
         # The Hermes agent: it answers Slack DMs by running an allowlisted subset
         # of the `fm` CLI against a local model. macOS only because it is a host
         # service installed on the Rune Mac mini under its own `fm` account,
