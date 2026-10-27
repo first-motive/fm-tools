@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from fm_tools.archive_workflow import Refusal, operator_key, parser
 
 SIGNING_PREFIX = b"fm-storage-request-v1\n"
+REPLY_PREFIX = b"fm-storage-reply-v1\n"
 MAX_BODY_BYTES = 64 * 1024
 #: How far a request's clock may sit from this host's, either way.
 FRESHNESS_S = 120
@@ -216,3 +217,23 @@ def answer(request: Request, *, host: str, operators: Callable[[], list[dict]], 
     except Refusal as refused:
         return refusal(refused.code)
     return run(request, actor, respond)
+
+
+def seal(envelope: dict, request: Request | None, key) -> bytes:
+    """A reply's bytes, signed by the agent's key over its request's nonce.
+
+    The fabric lets any peer answer a query, so a client trusts a reply only
+    when the coordinator's own key (published on its card) signed it, and only
+    for the request it sent: the nonce binds the two. A body that never decoded
+    has no nonce to bind to and goes back unsigned, which a client refuses.
+    """
+    raw = json.dumps(envelope, sort_keys=True).encode()
+    nonce = request.payload.get("nonce") if request is not None else None
+    if key is None or not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        return raw
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    signature = key.sign(REPLY_PREFIX + nonce.encode() + b"\n" + raw, ec.ECDSA(hashes.SHA256()))
+    return json.dumps({"envelope": base64.b64encode(raw).decode(),
+                       "signature": base64.b64encode(signature).decode()}, sort_keys=True).encode()

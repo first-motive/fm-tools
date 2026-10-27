@@ -61,7 +61,7 @@ class Session:
 
 
 class Agent:
-    host, name = "fm_ws_01", "fm-ws-01"
+    host, name, key = "fm_ws_01", "fm-ws-01", None
 
     def __init__(self):
         self.answered = []
@@ -80,7 +80,7 @@ class Agent:
 @pytest.fixture
 def fabric():
     session, agent, replies = Session(), Agent(), []
-    fabric = Fabric(session, agent, reply=lambda query, key, body: replies.append((key, body)))
+    fabric = Fabric(session, agent, send=lambda query, key, ok, payload: replies.append((key, json.loads(payload))))
     yield session, agent, replies
     fabric.close()
 
@@ -112,3 +112,33 @@ def test_the_cli_prints_compact_json_only_when_asked(tmp_path, monkeypatch, caps
     assert "\n" not in capsys.readouterr().out.strip()
     main(["library", "locations"])
     assert capsys.readouterr().out.startswith("{\n  ")
+
+
+
+def test_the_agent_key_is_made_once_owner_only(tmp_path):
+    import os
+    import stat as stat_module
+
+    from fm_tools.storage_agent import agent_key, public_key
+
+    first = agent_key(tmp_path)
+    assert stat_module.S_IMODE(os.stat(tmp_path / "agent.key").st_mode) == 0o600
+    assert public_key(agent_key(tmp_path)) == public_key(first)
+    assert public_key(first).startswith("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE")
+
+
+def test_an_unsafe_agent_key_is_refused(tmp_path):
+    import os
+
+    from fm_tools.archive_workflow import Refusal
+    from fm_tools.storage_agent import agent_key
+
+    agent_key(tmp_path)
+    os.chmod(tmp_path / "agent.key", 0o640)
+    with pytest.raises(Refusal, match="unsafe_agent_key"):
+        agent_key(tmp_path)
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "agent.key").symlink_to(tmp_path / "agent.key")
+    with pytest.raises(OSError):
+        agent_key(linked)

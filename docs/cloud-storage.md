@@ -81,11 +81,19 @@ Listing a key on the card is the authorisation, the way `authorized_keys` is
 for SSH. Any listed key may run every served operation. Remove a key from the
 card to revoke it; the agent reads the card on every request.
 
-Replies are not signed, and the router has no access control, so a peer that
-declares the same key could answer in the agent's place. It cannot change the
-library that way, but a client should read the library back after a write
-rather than trust the reply alone. Router access control is the fleet-wide
-follow-up fm-comms `docs/REMOTE.md` defers.
+Replies are signed too, because any peer that reaches the router could
+answer a query in the agent's place. The agent keeps a P-256 key in
+`state_dir/agent.key`; `fm-storage-agent --public-key` prints its public half,
+which fm-setup writes to the card as `storage.agent_key`. `fm device list`
+reads that field from each workstation's card over tailnet SSH and reports it
+as `storage_key`, and a client trusts only replies that key signed.
+
+A sealed reply is `{"envelope": <base64>, "signature": <base64>}`: the
+envelope is the archive JSON, and the signature is ECDSA P-256 over
+`fm-storage-reply-v1\n`, the request's nonce, `\n`, and the exact envelope
+bytes. The nonce binds a reply to the request it answers. A body too malformed
+to name a nonce is refused unsigned, and a client treats an unsigned reply as
+no answer.
 
 ## Commands
 

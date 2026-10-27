@@ -62,7 +62,7 @@ def configuration() -> tuple[object, dict]:
     config = json.loads(card.path.read_text()).get("storage")
     if not isinstance(config, dict) or config.get("contract_version") != 1:
         raise Refusal("coordinator_not_configured")
-    if set(config) - {"operators"} != {"contract_version", "account", "state_dir", "locations"}:
+    if set(config) - {"operators", "agent_key"} != {"contract_version", "account", "state_dir", "locations"}:
         raise Refusal("invalid_coordinator_configuration")
     operators = config.get("operators", [])
     if (not isinstance(operators, list) or len(operators) > 100
@@ -72,6 +72,8 @@ def configuration() -> tuple[object, dict]:
                    for row in operators)
             or len({row["name"] for row in operators}) != len(operators)):
         raise Refusal("invalid_operators")
+    if "agent_key" in config and operator_key(config["agent_key"]) is None:
+        raise Refusal("invalid_agent_key")
     if config.get("account") != pwd.getpwuid(os.getuid()).pw_name:
         raise Refusal("coordinator_account_required")
     state = config.get("state_dir")

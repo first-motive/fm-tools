@@ -10,7 +10,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from fm_tools.storage_requests import SIGNING_PREFIX, Nonces, Refusal, answer, decode, key_id
+from fm_tools.storage_requests import REPLY_PREFIX, SIGNING_PREFIX, Nonces, Refusal, answer, decode, key_id, seal
 
 HOST = "fm_ws_01"
 NOW = 1_793_000_000
@@ -184,3 +184,21 @@ def test_the_data_checkout_joins_the_path_once(tmp_path, monkeypatch):
     data_package(tmp_path)
     data_package(tmp_path)
     assert sys.path.count(str(root / "fm_data_archive")) == 1
+
+
+
+def test_a_reply_is_sealed_over_its_requests_nonce():
+    agent = ec.generate_private_key(ec.SECP256R1())
+    private, operator = keypair()
+    request = decode(body(["library", "list"], private, operator))
+    envelope = {"contract_version": 1, "ok": True, "operation": "library.list", "data": {"revision": 3}}
+    sealed = json.loads(seal(envelope, request, agent))
+    raw = base64.b64decode(sealed["envelope"])
+    assert json.loads(raw) == envelope
+    message = REPLY_PREFIX + request.payload["nonce"].encode() + b"\n" + raw
+    agent.public_key().verify(base64.b64decode(sealed["signature"]), message, ec.ECDSA(hashes.SHA256()))
+
+
+def test_a_reply_with_nothing_to_bind_goes_unsigned():
+    envelope = {"ok": False, "error_code": "invalid_request"}
+    assert json.loads(seal(envelope, None, ec.generate_private_key(ec.SECP256R1()))) == envelope

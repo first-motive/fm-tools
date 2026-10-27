@@ -48,6 +48,7 @@ STATUS = {
 # The real reader, kept before the autouse fixture below replaces it, so the
 # tests that exercise it can put it back behind a stubbed ssh.
 REMOTE_KIND = device._remote_kind
+REMOTE_STORAGE_KEY = device._remote_storage_key
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +56,7 @@ def no_robot_ssh(monkeypatch, tmp_path):
     """No test reaches a real robot, and none shares a kind cache with the host."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setattr(device, "_remote_kind", lambda found: "")
+    monkeypatch.setattr(device, "_remote_storage_key", lambda found: "")
 
 
 @pytest.fixture
@@ -514,3 +516,75 @@ def test_an_unreadable_robot_card_reports_no_kind(tailnet, robot_card, capsys, s
     robot_card(stdout, returncode)
     assert main(["device", "list", "--json"]) == 0
     assert _kinds(capsys)["fm-rob-01"] == ""
+
+
+# --- storage agent key --------------------------------------------------------
+
+AGENT_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEd5WSFNctOcpgCf3WXR4UxDZEkWZ9PmZDMkyCo5CJbuUIUzMhnd/ygxPVC+Fc3Tmvf4nrnNu8+W4XqEmjSeCd5Q=="
+
+
+def _storage_keys(capsys):
+    rows = json.loads(capsys.readouterr().out)["data"]
+    return {row["name"]: row["storage_key"] for row in rows}
+
+
+def _with_tower(online=True):
+    status = json.loads(json.dumps(STATUS))
+    status["Peer"]["key-t"] = {"HostName": "fm-ws-02", "DNSName": "fm-ws-02.tail1234.ts.net.",
+                               "TailscaleIPs": ["100.64.0.6"], "Online": online}
+    return status
+
+
+@pytest.fixture
+def tower_card(monkeypatch):
+    """A peer tower, fm-ws-02, behind an ssh that answers with its card."""
+    status = _with_tower()
+    monkeypatch.setattr(device, "_tailscale_status", lambda: status)
+
+    def answer(card):
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            if isinstance(card, Exception):
+                raise card
+            return _Done(0, json.dumps(card))
+
+        monkeypatch.setattr(device, "_remote_storage_key", REMOTE_STORAGE_KEY)
+        monkeypatch.setattr(device.subprocess, "run", fake)
+        return calls
+
+    return answer
+
+
+def test_a_coordinators_agent_key_is_read_from_its_card(tower_card, capsys):
+    calls = tower_card({"schema_version": 1, "storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    keys = _storage_keys(capsys)
+    assert keys["fm-ws-02"] == AGENT_KEY
+    assert [keys[name] for name in ("fm-rec-01", "fm-rob-01")] == ["", ""]
+    assert len(calls) == 1 and calls[0][-2] == "fm@fm-ws-02.tail1234.ts.net"
+
+
+@pytest.mark.parametrize("card", [{"storage": {"agent_key": "not-a-key"}}, {"storage": {}}, {}])
+def test_a_card_without_a_well_formed_key_names_none(tower_card, capsys, card):
+    tower_card(card)
+    assert main(["device", "list", "--json"]) == 0
+    assert _storage_keys(capsys)["fm-ws-02"] == ""
+
+
+def test_an_offline_coordinator_keeps_its_last_key_and_an_online_one_drops_a_removed_key(
+        monkeypatch, tower_card, capsys):
+    tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    capsys.readouterr()
+    offline = _with_tower(online=False)
+    monkeypatch.setattr(device, "_tailscale_status", lambda: offline)
+    tower_card(RuntimeError("an offline coordinator is never asked"))
+    assert main(["device", "list", "--json"]) == 0
+    assert _storage_keys(capsys)["fm-ws-02"] == AGENT_KEY
+    online = _with_tower()
+    monkeypatch.setattr(device, "_tailscale_status", lambda: online)
+    tower_card({"storage": {}})
+    assert main(["device", "list", "--json"]) == 0
+    assert _storage_keys(capsys)["fm-ws-02"] == ""

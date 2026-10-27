@@ -24,6 +24,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import threading
 import time
@@ -32,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fm_tools.archive_workflow import Refusal, configuration, respond
-from fm_tools.storage_requests import MAX_BODY_BYTES, Nonces, Request, decode, refusal, run, verify
+from fm_tools.storage_requests import MAX_BODY_BYTES, Nonces, Request, decode, refusal, run, seal, verify
 
 KEY_PREFIX = "fm/storage"
 
@@ -116,10 +117,56 @@ def safe_refusal(exc: Exception) -> dict:
                    else "precondition_failed")
 
 
+def agent_key(state_dir: Path):
+    """The agent's own signing key, from ``state_dir``, made on first use.
+
+    Its public half goes on the machine card (``storage.agent_key``), where a
+    client reads it over tailnet SSH and then trusts only replies it signed.
+    Created owner-only and never through a symlink; an existing file that is
+    not a regular file of this account's, or not a P-256 key, is refused.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    path = state_dir / "agent.key"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        key = ec.generate_private_key(ec.SECP256R1())
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption())
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            return agent_key(state_dir)  # another start made it first; use that one
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(pem)
+        return key
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Refusal("unsafe_agent_key")
+        key = serialization.load_pem_private_key(handle.read(), password=None)
+    if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise Refusal("unsafe_agent_key")
+    return key
+
+
+def public_key(key) -> str:
+    """The card's ``storage.agent_key`` value: base64 DER SubjectPublicKeyInfo."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+
+    return base64.b64encode(key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+
+
 class Agent:
-    def __init__(self, host: str, name: str) -> None:
+    def __init__(self, host: str, name: str, key=None) -> None:
         self.host = host
         self.name = name
+        self.key = key
         self.nonces = Nonces()
         # Requests carry whole seconds. One issued in the second this agent
         # started may predate it, so the first second it accepts is the next.
@@ -146,19 +193,24 @@ class Agent:
             return safe_refusal(exc)
 
 
-def _reply(query, key: str, body: dict) -> None:
+def _send(query, key: str, ok: bool, payload: bytes) -> None:
     import zenoh
 
-    if body.get("ok"):
-        query.reply(key, encode(body), encoding=zenoh.Encoding.APPLICATION_JSON)
+    if ok:
+        query.reply(key, payload, encoding=zenoh.Encoding.APPLICATION_JSON)
     else:
-        query.reply_err(encode(body), encoding=zenoh.Encoding.APPLICATION_JSON)
+        query.reply_err(payload, encoding=zenoh.Encoding.APPLICATION_JSON)
 
 
 class Fabric:
-    def __init__(self, session, agent: Agent, reply=_reply) -> None:
+    def __init__(self, session, agent: Agent, send=_send) -> None:
         self.lanes = {"read": Lane(*READ_LANE), "write": Lane(*WRITE_LANE)}
         status_key, request_key = key_of(agent.host, "status"), key_of(agent.host, "request")
+
+        # Every request reply is sealed with the agent's key over the request's
+        # nonce, once the request decoded far enough to name one.
+        def reply(query, key: str, body: dict, request: Request | None = None) -> None:
+            send(query, key, bool(body.get("ok")), seal(body, request, agent.key) if key == request_key else encode(body))
 
         def status(query) -> None:
             reply(query, status_key, agent.status())
@@ -178,11 +230,11 @@ class Fabric:
                 return
             actor = agent.authorise(request)
             if isinstance(actor, dict):
-                reply(query, request_key, actor)
+                reply(query, request_key, actor, request)
                 return
             lane = self.lanes["write" if request.is_write else "read"]
-            if not lane.submit(lambda: reply(query, request_key, agent.run(request, actor))):
-                reply(query, request_key, refusal("busy"))
+            if not lane.submit(lambda: reply(query, request_key, agent.run(request, actor), request)):
+                reply(query, request_key, refusal("busy"), request)
 
         self.queryables = [session.declare_queryable(status_key, status),
                            session.declare_queryable(request_key, handle)]
@@ -204,12 +256,19 @@ def _session_config(endpoint: str):
 
 
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(prog="fm-storage-agent",
-                            description="Serve this host's Cloud Storage coordinator over Zenoh.").parse_args(argv)
+    parser = argparse.ArgumentParser(prog="fm-storage-agent",
+                                     description="Serve this host's Cloud Storage coordinator over Zenoh.")
+    parser.add_argument("--public-key", action="store_true",
+                        help="Print the agent's public key for the card's storage.agent_key, making it if absent.")
+    args = parser.parse_args(argv)
     try:
         card, config = configuration()
+        key = agent_key(Path(config["state_dir"]))
+        if args.public_key:
+            print(public_key(key))
+            return 0
         endpoint = router_endpoint()
-    except (Refusal, RuntimeError) as exc:
+    except (Refusal, RuntimeError, OSError, ValueError) as exc:
         print(f"fm-storage-agent: {getattr(exc, 'code', exc)}", file=sys.stderr)
         return 1
     # Nonces live in this process, so a second agent on the host would accept
@@ -226,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     import zenoh
 
-    agent = Agent(card.namespace, card.name)
+    agent = Agent(card.namespace, card.name, key)
     stop = threading.Event()
     # systemd stops the unit with SIGTERM; leave through the same cleanup as Ctrl-C.
     signal.signal(signal.SIGTERM, lambda *_: stop.set())

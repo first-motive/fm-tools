@@ -74,6 +74,9 @@ class Device:
     workspace: str = ""
     # Which robot a `robot` row is (the card's `robot` field); empty otherwise.
     kind: str = ""
+    # A storage coordinator's agent key (the card's `storage.agent_key`), which
+    # Desktop checks the agent's replies against; empty otherwise.
+    storage_key: str = ""
 
     @property
     def user(self) -> str:
@@ -189,7 +192,25 @@ def _with_local_card(device: Device) -> Device:
         fleet=card.fleet,
         workspace=str(card.workspace),
         kind=card.robot if card.role == "robot" else "",
+        storage_key=_storage_key_of(_local_card_data(card.path)),
     )
+
+
+def _local_card_data(path: Path) -> dict:
+    try:
+        data = jsonlib.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _storage_key_of(card: dict) -> str:
+    """A card's storage agent key, or ``""`` when it names no well-formed one."""
+    from fm_tools.archive_workflow import operator_key
+
+    storage = card.get("storage")
+    key = storage.get("agent_key") if isinstance(storage, dict) else None
+    return key if operator_key(key) is not None else ""
 
 
 # How long a robot gets to answer before the listing moves on without it. Short
@@ -226,12 +247,12 @@ def _write_kind_cache(kinds: dict[str, str]) -> None:
         pass
 
 
-def _remote_kind(device: Device) -> str:
-    """The robot kind a robot's own card declares, or ``""`` when unreadable.
+def _remote_card(device: Device) -> dict:
+    """A peer's own card, or ``{}`` when it cannot be read.
 
     ``BatchMode`` refuses every prompt and ``ConnectTimeout`` bounds the wait, so
-    a robot that needs a password or does not answer costs seconds, not a hang.
-    A robot runs Linux, so its card is at the Linux path.
+    a machine that needs a password or does not answer costs seconds, not a
+    hang. A fleet machine runs Linux, so its card is at the Linux path.
     """
     try:
         done = subprocess.run(
@@ -250,15 +271,25 @@ def _remote_kind(device: Device) -> str:
             timeout=KIND_CONNECT_TIMEOUT * 2,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        return {}
     if done.returncode != 0:
-        return ""
+        return {}
     try:
         card = jsonlib.loads(done.stdout)
     except ValueError:
-        return ""
-    kind = card.get("robot", "") if isinstance(card, dict) else ""
+        return {}
+    return card if isinstance(card, dict) else {}
+
+
+def _remote_kind(device: Device) -> str:
+    """The robot kind a robot's own card declares, or ``""`` when unreadable."""
+    kind = _remote_card(device).get("robot", "")
     return kind if kind in ROBOT_KINDS else ""
+
+
+def _remote_storage_key(device: Device) -> str:
+    """The storage agent key a peer's own card declares, or ``""``."""
+    return _storage_key_of(_remote_card(device))
 
 
 def with_kinds(found: list[Device]) -> list[Device]:
@@ -285,6 +316,48 @@ def with_kinds(found: list[Device]) -> list[Device]:
         result.append(replace(device, kind=kind))
     if learned != cache:
         _write_kind_cache(learned)
+    return result
+
+
+def _storage_key_cache_path() -> Path:
+    return _kind_cache_path().with_name("device-storage-keys.json")
+
+
+def with_storage_keys(found: list[Device]) -> list[Device]:
+    """Fill each workstation row's storage agent key: read when online, remembered when not.
+
+    The key is read from the coordinator's own card over ssh, which tailnet SSH
+    authenticates. That is what lets Desktop trust an agent on the
+    unauthenticated fabric: a reply signed by this key comes from the machine
+    the card is on. Only workstation rows are asked; every other row keeps ``""``.
+    """
+    path = _storage_key_cache_path()
+    try:
+        cache = jsonlib.loads(path.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    cache = {str(name): key for name, key in cache.items() if isinstance(key, str)} if isinstance(cache, dict) else {}
+    learned = dict(cache)
+    result = []
+    for device in found:
+        if device.role != "workstation":
+            result.append(device)
+            continue
+        key = device.storage_key
+        if not key and device.online and not device.this_machine:
+            key = _remote_storage_key(device)
+            # An online coordinator that names no key has none: forget the old one.
+            learned.pop(device.name, None)
+        key = key or ("" if device.online else learned.get(device.name, ""))
+        if key:
+            learned[device.name] = key
+        result.append(replace(device, storage_key=key))
+    if learned != cache:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(jsonlib.dumps(learned, indent=2, sort_keys=True) + "\n")
+        except OSError:
+            pass
     return result
 
 
@@ -323,6 +396,7 @@ def _payload(found: list[Device]) -> list[dict]:
             "fleet": device.fleet,
             "workspace": device.workspace,
             "kind": device.kind,
+            "storage_key": device.storage_key,
         }
         for device in found
     ]
@@ -572,7 +646,7 @@ def run_device(argv: list[str]) -> int:
     # to fall back to when it is unreachable.
     try:
         if verb == "list":
-            found = with_kinds(devices())
+            found = with_storage_keys(with_kinds(devices()))
             if "--json" in rest:
                 emit("device", _payload(found))
             else:
