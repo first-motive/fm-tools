@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fm-tools"
-version = "0.28.0"
+version = "0.29.0"
 description = "First Motive shared terminal tooling: brand banners, themed widgets, and a pick menu."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,10 +29,14 @@ dependencies = [
 fm = "fm_tools.cli:main"
 fm-pick = "fm_tools.tui.pick:main"
 fm-archive-workflow = "fm_tools.archive_workflow:main"
+fm-storage-agent = "fm_tools.storage_agent:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+dev = ["pytest", "pytest-asyncio", "ruff", "cryptography>=42"]
 archive = ["boto3", "PyYAML"]
+# The coordinator's Zenoh service. The zenoh wheel is pinned to 1.9.0, the
+# version fm-comms' router and the robot and sim agents run.
+storage-agent = ["eclipse-zenoh==1.9.0", "cryptography>=42"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fm_tools"]

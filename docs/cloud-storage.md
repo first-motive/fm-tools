@@ -36,6 +36,57 @@ Copy staging is private, and symlinks, traversal and conflicting destinations
 are refused. Source discovery reads only configured roots. A source host needs
 Python 3 for the bounded metadata probe and rsync for intake.
 
+## Serve The Library On Zenoh
+
+`fm-storage-agent` serves the same operations on the fleet's Zenoh fabric, so
+Desktop reaches the coordinator through the router it already uses for robots
+and sim hosts. Install fm-tools with the `archive` and `storage-agent` extras
+and run the agent as the card's `storage.account`. It reads the router from
+`FM_ROUTER_ENDPOINT`, or from `/etc/fm-comms.env`.
+
+| Key | Answers |
+| --- | --- |
+| `fm/storage/<host>/status` | Discovery, also for `fm/storage/*/status`. |
+| `fm/storage/<host>/request` | One operation, with the `--json` envelope. Never for a wildcard. |
+
+`<host>` is the card name with `-` replaced by `_`. A request body is
+`{"payload": <base64>, "signature": <base64>}`. The payload is JSON naming
+`argv` (the arguments after `fm archive`, without `--json`), `host`,
+`issued_at` (Unix seconds), a 32-hex `nonce` and `key` (the SHA-256 of the
+signing key's DER). A refusal arrives as a Zenoh error reply carrying the same
+envelope.
+
+The fabric authenticates no caller: any device that reaches the router can
+query, robots and cloud sim instances included. So the agent answers `status`
+for anyone and every request only for a listed operator:
+
+- A request carries an ECDSA P-256 signature over `fm-storage-request-v1\n`
+  followed by the exact payload bytes. The key must be listed in the card's
+  `storage.operators` as `{"name", "public_key"}`, where `public_key` is the
+  base64 DER SubjectPublicKeyInfo.
+- The request must be for this host, issued within two minutes and after the
+  agent started, and carry an unused nonce.
+- Reads are signed too. File lists and previews show recording contents that
+  only SSH holders could read before.
+- The library records the operator's name as the actor, so a change names the
+  person rather than the account.
+
+The agent serves `library` locations, list, search, show, files, preview,
+history, refresh, select, folder, item, collection and protect; `copy` show,
+plan, start and verify; and `jobs` list, show, status, pause, resume, retry and
+cancel. It does not serve `copy download`, `copy export`, `copy receiver`,
+`library recover` or `jobs wait`. Bytes still move over SSH.
+
+Listing a key on the card is the authorisation, the way `authorized_keys` is
+for SSH. Any listed key may run every served operation. Remove a key from the
+card to revoke it; the agent reads the card on every request.
+
+Replies are not signed, and the router has no access control, so a peer that
+declares the same key could answer in the agent's place. It cannot change the
+library that way, but a client should read the library back after a write
+rather than trust the reply alone. Router access control is the fleet-wide
+follow-up fm-comms `docs/REMOTE.md` defers.
+
 ## Commands
 
 Every new command accepts `--json`. Responses carry `contract_version: 1`,
