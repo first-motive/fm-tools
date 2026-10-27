@@ -232,9 +232,9 @@ def seal(envelope: dict, request: Request | None, key) -> bytes:
     when the coordinator's own key (published on its card) signed it, and only
     for the request it sent: the nonce and payload digest bind the two. A body
     that never decoded has nothing to bind to and goes back unsigned, which a
-    client refuses. Refusals of requests that failed verification are signed
-    too, so a client can say why; a peer that saw a request's nonce and payload
-    could at most draw such a refusal for it, which only denies that request.
+    client refuses. The agent seals only replies to verified requests: a
+    refusal of one that failed verification goes back unsigned, since the
+    request may be a copy of someone else's.
     """
     raw = json.dumps(envelope, sort_keys=True).encode()
     nonce = request.payload.get("nonce") if request is not None else None

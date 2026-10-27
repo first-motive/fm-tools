@@ -94,9 +94,11 @@ A sealed reply is `{"envelope": <base64>, "signature": <base64>}`: the
 envelope is the archive JSON, and the signature is ECDSA P-256 over
 `fm-storage-reply-v1\n`, the request's nonce, `\n`, the hex SHA-256 of the
 request's exact payload bytes, `\n`, and the exact envelope bytes. The nonce
-and digest bind a reply to the request it answers. A body too malformed
-to name a nonce is refused unsigned, and a client treats an unsigned reply as
-no answer.
+and digest bind a reply to the request it answers. Only replies to verified
+requests are signed: a refusal of a malformed or unverified request goes back
+unsigned, and a client treats an unsigned reply as no answer. `fm device list`
+reads cards with `StrictHostKeyChecking=yes` and attests a name only under this
+tailnet's own MagicDNS suffix.
 
 ## Commands
 

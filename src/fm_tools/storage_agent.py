@@ -26,6 +26,7 @@ import re
 import signal
 import stat
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -138,8 +139,8 @@ def agent_key(state_dir: Path):
         # Written whole beside it, then linked into place: the key file is
         # never seen empty or half written, and a second start that loses the
         # race reads the winner's key rather than keeping its own.
-        staged = state_dir / f".agent.key.{os.getpid()}"
-        descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        descriptor, name = tempfile.mkstemp(prefix=".agent.key.", dir=state_dir)  # 0600, never an existing file
+        staged = Path(name)
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(pem)
@@ -239,7 +240,10 @@ class Fabric:
                 return
             actor = agent.authorise(request)
             if isinstance(actor, dict):
-                reply(query, request_key, actor, request)
+                # Unsigned: a request that failed verification may be a copy of
+                # someone else's, and a signed refusal relayed to them would
+                # report a write that ran as one that failed.
+                reply(query, request_key, actor)
                 return
             lane = self.lanes["write" if request.is_write else "read"]
             if not lane.submit(lambda: reply(query, request_key, agent.run(request, actor), request)):

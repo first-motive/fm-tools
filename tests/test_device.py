@@ -8,6 +8,7 @@ from fm_tools.cli import device, exits, main
 from fm_tools.cli.adopt import ref_for
 
 STATUS = {
+    "MagicDNSSuffix": "tail1234.ts.net",
     "Self": {
         "HostName": "fm-ws-01",
         "DNSName": "fm-ws-01.tail1234.ts.net.",
@@ -621,3 +622,20 @@ def test_an_unreadable_card_keeps_the_key_last_read(monkeypatch, tower_card, cap
     tower_card(device.subprocess.TimeoutExpired("ssh", device.KIND_CONNECT_TIMEOUT))
     assert main(["device", "list", "--json"]) == 0
     assert _storage_keys(capsys)["fm-ws-02"] == AGENT_KEY
+
+
+def test_a_node_shared_in_from_another_tailnet_is_never_trusted_for_a_key(monkeypatch, tower_card, capsys):
+    status = json.loads(json.dumps(STATUS))
+    status["Peer"]["key-x"] = {"HostName": "x", "DNSName": "fm-ws-05.other.ts.net.",
+                               "TailscaleIPs": ["100.64.0.10"], "Online": True}
+    monkeypatch.setattr(device, "_tailscale_status", lambda: status)
+    calls = tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    assert _storage_keys(capsys)["fm-ws-05"] == ""
+    assert calls == []
+
+
+def test_a_card_is_read_only_from_a_known_host_key(tower_card, capsys):
+    calls = tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    assert "StrictHostKeyChecking=yes" in calls[0]

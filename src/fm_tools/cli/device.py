@@ -129,7 +129,7 @@ def _tailscale_status() -> dict:
         raise OSError(f"tailscale status is not readable as JSON ({exc})") from exc
 
 
-def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
+def _peer_device(entry: dict, this_machine: bool = False, suffix: str = "") -> Device | None:
     """One tailnet peer as a :class:`Device`, or ``None`` when it is not ours.
 
     A tailnet carries phones, personal laptops, and other people's machines. Only
@@ -153,7 +153,9 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
     # belongs to somebody else.
     name = dns.split(".")[0] if dns else ""
     role = role_of(name)
-    attested = bool(role)
+    # Attested only under this tailnet's own suffix: a node shared in from
+    # another tailnet chose its name there.
+    attested = bool(role) and bool(suffix) and dns == f"{name}.{suffix}"
     if not role:
         name = hostname
         role = role_of(name)
@@ -269,6 +271,10 @@ def _remote_card(device: Device) -> dict | None:
                 "BatchMode=yes",
                 "-o",
                 f"ConnectTimeout={KIND_CONNECT_TIMEOUT}",
+                # A card read here can carry the key replies are trusted by, so
+                # an unknown or changed host key is refused whatever ssh_config says.
+                "-o",
+                "StrictHostKeyChecking=yes",
                 device.target,
                 f"cat {LINUX_PATH}",
             ],
@@ -385,13 +391,14 @@ def devices() -> list[Device]:
     status = _tailscale_status()
     found: list[Device] = []
 
-    local = _peer_device(status.get("Self") or {}, this_machine=True)
+    suffix = str(status.get("MagicDNSSuffix") or "").strip(".")
+    local = _peer_device(status.get("Self") or {}, this_machine=True, suffix=suffix)
     if local is not None:
         found.append(_with_local_card(local))
 
     peers = (status.get("Peer") or {}).values()
     found.extend(
-        device for device in (_peer_device(peer) for peer in peers) if device is not None
+        device for device in (_peer_device(peer, suffix=suffix) for peer in peers) if device is not None
     )
     return sorted(found, key=lambda device: (not device.this_machine, device.name))
 
