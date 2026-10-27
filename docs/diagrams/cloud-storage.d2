@@ -3,6 +3,7 @@ direction: right
 
 clients: "Desktop / CLI" { class: node }
 route: "fm-ros2\nfm archive" { class: pkg }
+agent: "fm-tools\nStorage Agent" { class: pkg }
 coordinator: "fm-tools\nPlans And Jobs" { class: pkg }
 card: "fm-setup\nMachine Card" { class: art }
 library: "fm-data\nLibrary And Organisation" { class: pkg }
@@ -14,8 +15,11 @@ copies: "Managed Copies\nFull SHA-256 Check" { class: art }
 bucket: "Backblaze\nVersions And Receipts" { class: art }
 
 clients -> route: typed commands
+clients -> agent: signed zenoh requests
 route -> coordinator
+agent -> coordinator: verified operator
 card -> coordinator: account and locations
+card -> agent: operator keys
 coordinator -> library: reads and metadata changes
 library -> database
 sources -> intake: frozen selection

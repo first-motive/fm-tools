@@ -7,6 +7,8 @@ never client paths; the host's machine card supplies every managed root.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from datetime import datetime
 import json
 import os
@@ -35,6 +37,24 @@ class Refusal(ValueError):
         super().__init__(code)
 
 
+#: An operator's name as the library records it: who acted, never a credential.
+OPERATOR_NAME = r"[a-z0-9][a-z0-9._-]{0,63}"
+#: Every P-256 SubjectPublicKeyInfo starts with these bytes (the EC algorithm,
+#: the prime256v1 curve, and an uncompressed point) and is 91 bytes long.
+P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
+
+
+def operator_key(text: object) -> bytes | None:
+    """An operator's public key as DER, or None when it is not a P-256 key."""
+    if not isinstance(text, str) or len(text) > 400:
+        return None
+    try:
+        der = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return der if len(der) == 91 and der.startswith(P256_SPKI_PREFIX) else None
+
+
 def configuration() -> tuple[object, dict]:
     card = read_card()
     if card is None:
@@ -42,8 +62,18 @@ def configuration() -> tuple[object, dict]:
     config = json.loads(card.path.read_text()).get("storage")
     if not isinstance(config, dict) or config.get("contract_version") != 1:
         raise Refusal("coordinator_not_configured")
-    if set(config) != {"contract_version", "account", "state_dir", "locations"}:
+    if set(config) - {"operators", "agent_key"} != {"contract_version", "account", "state_dir", "locations"}:
         raise Refusal("invalid_coordinator_configuration")
+    operators = config.get("operators", [])
+    if (not isinstance(operators, list) or len(operators) > 100
+            or any(not isinstance(row, dict) or set(row) != {"name", "public_key"}
+                   or not isinstance(row["name"], str) or not re.fullmatch(OPERATOR_NAME, row["name"])
+                   or operator_key(row["public_key"]) is None
+                   for row in operators)
+            or len({row["name"] for row in operators}) != len(operators)):
+        raise Refusal("invalid_operators")
+    if "agent_key" in config and operator_key(config["agent_key"]) is None:
+        raise Refusal("invalid_agent_key")
     if config.get("account") != pwd.getpwuid(os.getuid()).pw_name:
         raise Refusal("coordinator_account_required")
     state = config.get("state_dir")
@@ -84,8 +114,10 @@ def data_package(workspace: Path) -> None:
     for root in (workspace / "fm_ros2" / "src" / "fm_data", workspace / "fm-data"):
         package = root / "fm_data_archive"
         if (package / "fm_data_archive" / "core" / "library.py").is_file():
+            # The storage agent calls this on every request; insert each path once.
             for name in ("fm_data_archive", "fm_data_record", "fm_data_annotate"):
-                sys.path.insert(0, str(root / name))
+                if str(root / name) not in sys.path:
+                    sys.path.insert(0, str(root / name))
             return
         if root.is_dir():
             raise Refusal("archive_library_package_outdated")
@@ -976,22 +1008,30 @@ def execute(args: argparse.Namespace) -> dict:
             command["tags"] = args.tag
         if args.reassign_to is not None:
             command["reassign_to"] = None if args.reassign_to == "unfiled" else args.reassign_to
-        return library.mutate(command, expected_revision=args.revision, actor=pwd.getpwuid(os.getuid()).pw_name, request_id=args.request_id)
+        return library.mutate(command, expected_revision=args.revision, actor=getattr(args, "actor", None) or pwd.getpwuid(os.getuid()).pw_name,
+                              request_id=args.request_id)
     finally:
         library.close()
 
 
-def main(argv: list[str] | None = None) -> int:
-    arguments = sys.argv[1:] if argv is None else argv
+def respond(arguments: list[str], *, actor: str | None = None,
+            allowed: Callable[[str], bool] = lambda operation: True) -> tuple[dict, int]:
+    """One request's envelope and exit code, for the CLI and the storage agent alike.
+
+    ``actor`` names who acted when the caller is not this account (the agent's
+    verified operator). ``allowed`` refuses an operation before it runs.
+    """
     try:
         args = parser().parse_args(arguments)
     except Refusal:
         operation = ".".join(arguments[:2]) if len(arguments) >= 2 else "archive"
-        print(json.dumps({"contract_version": 1, "operation": operation, "request_id": None,
-                          "ok": False, "error_code": "invalid_arguments"}))
-        return 3
+        return {"contract_version": 1, "operation": operation, "request_id": None,
+                "ok": False, "error_code": "invalid_arguments"}, 3
     envelope = {"contract_version": 1, "operation": args.group + "." + args.operation,
                 "request_id": args.request_id}
+    if not allowed(envelope["operation"]):
+        return {**envelope, "ok": False, "error_code": "operation_not_served"}, 3
+    args.actor = actor
     try:
         result = {**envelope, "ok": True, "data": execute(args)}
         code = 3 if args.group == "jobs" and args.operation == "wait" and result["data"].get("state") != "completed" else 0
@@ -1002,7 +1042,13 @@ def main(argv: list[str] | None = None) -> int:
         reason = getattr(exc, "code", str(exc))
         result = {**envelope, "ok": False, "error_code": reason if re.fullmatch(r"[a-z][a-z0-9_]{1,80}", reason) else "precondition_failed"}
         code = 3
-    print(json.dumps(result, sort_keys=True) if args.json else json.dumps(result, indent=2, sort_keys=True))
+    return result, code
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    result, code = respond(arguments)
+    print(json.dumps(result, sort_keys=True) if "--json" in arguments else json.dumps(result, indent=2, sort_keys=True))
     return code
 
 

@@ -74,6 +74,13 @@ class Device:
     workspace: str = ""
     # Which robot a `robot` row is (the card's `robot` field); empty otherwise.
     kind: str = ""
+    # A storage coordinator's agent key (the card's `storage.agent_key`), which
+    # Desktop checks the agent's replies against; empty otherwise.
+    storage_key: str = ""
+    # True when the tailnet's own name for the machine is ``name``. A name taken
+    # from the machine's self-declared hostname is not attested: any node can
+    # call itself fm-ws-01.
+    attested: bool = False
 
     @property
     def user(self) -> str:
@@ -122,7 +129,7 @@ def _tailscale_status() -> dict:
         raise OSError(f"tailscale status is not readable as JSON ({exc})") from exc
 
 
-def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
+def _peer_device(entry: dict, this_machine: bool = False, suffix: str = "") -> Device | None:
     """One tailnet peer as a :class:`Device`, or ``None`` when it is not ours.
 
     A tailnet carries phones, personal laptops, and other people's machines. Only
@@ -146,6 +153,9 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
     # belongs to somebody else.
     name = dns.split(".")[0] if dns else ""
     role = role_of(name)
+    # Attested only under this tailnet's own suffix: a node shared in from
+    # another tailnet chose its name there.
+    attested = bool(role) and bool(suffix) and dns == f"{name}.{suffix}"
     if not role:
         name = hostname
         role = role_of(name)
@@ -160,6 +170,7 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
         online=bool(entry.get("Online", False)) or this_machine,
         addresses=addresses,
         this_machine=this_machine,
+        attested=attested,
     )
 
 
@@ -189,7 +200,26 @@ def _with_local_card(device: Device) -> Device:
         fleet=card.fleet,
         workspace=str(card.workspace),
         kind=card.robot if card.role == "robot" else "",
+        storage_key=_storage_key_of(_local_card_data(card.path)),
+        attested=True,  # this machine's own card, read here
     )
+
+
+def _local_card_data(path: Path) -> dict:
+    try:
+        data = jsonlib.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _storage_key_of(card: dict) -> str:
+    """A card's storage agent key, or ``""`` when it names no well-formed one."""
+    from fm_tools.archive_workflow import operator_key
+
+    storage = card.get("storage")
+    key = storage.get("agent_key") if isinstance(storage, dict) else None
+    return key if operator_key(key) is not None else ""
 
 
 # How long a robot gets to answer before the listing moves on without it. Short
@@ -226,12 +256,12 @@ def _write_kind_cache(kinds: dict[str, str]) -> None:
         pass
 
 
-def _remote_kind(device: Device) -> str:
-    """The robot kind a robot's own card declares, or ``""`` when unreadable.
+def _remote_card(device: Device) -> dict | None:
+    """A peer's own card, or ``None`` when it cannot be read.
 
     ``BatchMode`` refuses every prompt and ``ConnectTimeout`` bounds the wait, so
-    a robot that needs a password or does not answer costs seconds, not a hang.
-    A robot runs Linux, so its card is at the Linux path.
+    a machine that needs a password or does not answer costs seconds, not a
+    hang. A fleet machine runs Linux, so its card is at the Linux path.
     """
     try:
         done = subprocess.run(
@@ -241,6 +271,10 @@ def _remote_kind(device: Device) -> str:
                 "BatchMode=yes",
                 "-o",
                 f"ConnectTimeout={KIND_CONNECT_TIMEOUT}",
+                # A card read here can carry the key replies are trusted by, so
+                # an unknown or changed host key is refused whatever ssh_config says.
+                "-o",
+                "StrictHostKeyChecking=yes",
                 device.target,
                 f"cat {LINUX_PATH}",
             ],
@@ -250,15 +284,27 @@ def _remote_kind(device: Device) -> str:
             timeout=KIND_CONNECT_TIMEOUT * 2,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        return None
     if done.returncode != 0:
-        return ""
+        return None
     try:
         card = jsonlib.loads(done.stdout)
     except ValueError:
-        return ""
-    kind = card.get("robot", "") if isinstance(card, dict) else ""
+        return None
+    return card if isinstance(card, dict) else None
+
+
+def _remote_kind(device: Device) -> str:
+    """The robot kind a robot's own card declares, or ``""`` when unreadable."""
+    kind = (_remote_card(device) or {}).get("robot", "")
     return kind if kind in ROBOT_KINDS else ""
+
+
+def _remote_storage_key(device: Device) -> str | None:
+    """The storage agent key a peer's own card declares, ``""`` when it names
+    none, or ``None`` when the card could not be read at all."""
+    card = _remote_card(device)
+    return None if card is None else _storage_key_of(card)
 
 
 def with_kinds(found: list[Device]) -> list[Device]:
@@ -288,18 +334,71 @@ def with_kinds(found: list[Device]) -> list[Device]:
     return result
 
 
+def _storage_key_cache_path() -> Path:
+    return _kind_cache_path().with_name("device-storage-keys.json")
+
+
+def with_storage_keys(found: list[Device]) -> list[Device]:
+    """Fill each workstation row's storage agent key: read when online, remembered when not.
+
+    The key is read from the coordinator's own card over ssh, which tailnet SSH
+    authenticates. That is what lets Desktop trust an agent on the
+    unauthenticated fabric: a reply signed by this key comes from the machine
+    the card is on. Only a workstation the tailnet itself names is asked, never
+    one named by its own hostname, and every other row keeps ``""``.
+
+    tradeoff: an offline coordinator reports the last key read, with no expiry,
+    so a rotated key is trusted until the machine is next seen online.
+    """
+    path = _storage_key_cache_path()
+    try:
+        cache = jsonlib.loads(path.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    cache = {str(name): key for name, key in cache.items() if isinstance(key, str)} if isinstance(cache, dict) else {}
+    learned = dict(cache)
+    # Two rows with one name means one of them is not the machine the name
+    # stands for; neither gets a key.
+    names = [device.name for device in found]
+    result = []
+    for device in found:
+        if device.role != "workstation" or not device.attested or names.count(device.name) > 1:
+            result.append(replace(device, storage_key=""))
+            continue
+        key = device.storage_key
+        if not key and device.online and not device.this_machine:
+            read = _remote_storage_key(device)
+            if read is not None:
+                # A card that was read and names no key has none: forget the
+                # old one. One that could not be read changes nothing.
+                learned.pop(device.name, None)
+                key = read
+        key = key or learned.get(device.name, "")
+        if key:
+            learned[device.name] = key
+        result.append(replace(device, storage_key=key))
+    if learned != cache:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(jsonlib.dumps(learned, indent=2, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return result
+
+
 def devices() -> list[Device]:
     """Every fleet machine the tailnet knows, this one first, then by name."""
     status = _tailscale_status()
     found: list[Device] = []
 
-    local = _peer_device(status.get("Self") or {}, this_machine=True)
+    suffix = str(status.get("MagicDNSSuffix") or "").strip(".")
+    local = _peer_device(status.get("Self") or {}, this_machine=True, suffix=suffix)
     if local is not None:
         found.append(_with_local_card(local))
 
     peers = (status.get("Peer") or {}).values()
     found.extend(
-        device for device in (_peer_device(peer) for peer in peers) if device is not None
+        device for device in (_peer_device(peer, suffix=suffix) for peer in peers) if device is not None
     )
     return sorted(found, key=lambda device: (not device.this_machine, device.name))
 
@@ -323,6 +422,7 @@ def _payload(found: list[Device]) -> list[dict]:
             "fleet": device.fleet,
             "workspace": device.workspace,
             "kind": device.kind,
+            "storage_key": device.storage_key,
         }
         for device in found
     ]
@@ -572,7 +672,7 @@ def run_device(argv: list[str]) -> int:
     # to fall back to when it is unreachable.
     try:
         if verb == "list":
-            found = with_kinds(devices())
+            found = with_storage_keys(with_kinds(devices()))
             if "--json" in rest:
                 emit("device", _payload(found))
             else:
