@@ -219,13 +219,22 @@ def answer(request: Request, *, host: str, operators: Callable[[], list[dict]], 
     return run(request, actor, respond)
 
 
+def reply_message(nonce: str, payload: bytes, envelope: bytes) -> bytes:
+    """What a reply's signature covers: the request's nonce and the SHA-256 of
+    its exact payload bytes, so a reply answers one request and no other."""
+    return REPLY_PREFIX + nonce.encode() + b"\n" + hashlib.sha256(payload).hexdigest().encode() + b"\n" + envelope
+
+
 def seal(envelope: dict, request: Request | None, key) -> bytes:
     """A reply's bytes, signed by the agent's key over its request's nonce.
 
     The fabric lets any peer answer a query, so a client trusts a reply only
     when the coordinator's own key (published on its card) signed it, and only
-    for the request it sent: the nonce binds the two. A body that never decoded
-    has no nonce to bind to and goes back unsigned, which a client refuses.
+    for the request it sent: the nonce and payload digest bind the two. A body
+    that never decoded has nothing to bind to and goes back unsigned, which a
+    client refuses. Refusals of requests that failed verification are signed
+    too, so a client can say why; a peer that saw a request's nonce and payload
+    could at most draw such a refusal for it, which only denies that request.
     """
     raw = json.dumps(envelope, sort_keys=True).encode()
     nonce = request.payload.get("nonce") if request is not None else None
@@ -234,6 +243,6 @@ def seal(envelope: dict, request: Request | None, key) -> bytes:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
 
-    signature = key.sign(REPLY_PREFIX + nonce.encode() + b"\n" + raw, ec.ECDSA(hashes.SHA256()))
+    signature = key.sign(reply_message(nonce, request.raw, raw), ec.ECDSA(hashes.SHA256()))
     return json.dumps({"envelope": base64.b64encode(raw).decode(),
                        "signature": base64.b64encode(signature).decode()}, sort_keys=True).encode()

@@ -135,12 +135,21 @@ def agent_key(state_dir: Path):
         key = ec.generate_private_key(ec.SECP256R1())
         pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                 serialization.NoEncryption())
+        # Written whole beside it, then linked into place: the key file is
+        # never seen empty or half written, and a second start that loses the
+        # race reads the winner's key rather than keeping its own.
+        staged = state_dir / f".agent.key.{os.getpid()}"
+        descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(pem)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(staged, path)
         except FileExistsError:
-            return agent_key(state_dir)  # another start made it first; use that one
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(pem)
+            return agent_key(state_dir)
+        finally:
+            staged.unlink(missing_ok=True)
         return key
     with os.fdopen(descriptor, "rb") as handle:
         info = os.fstat(handle.fileno())

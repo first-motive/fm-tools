@@ -10,7 +10,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from fm_tools.storage_requests import REPLY_PREFIX, SIGNING_PREFIX, Nonces, Refusal, answer, decode, key_id, seal
+from fm_tools.storage_requests import SIGNING_PREFIX, Nonces, Refusal, answer, decode, key_id, reply_message, seal
 
 HOST = "fm_ws_01"
 NOW = 1_793_000_000
@@ -195,7 +195,7 @@ def test_a_reply_is_sealed_over_its_requests_nonce():
     sealed = json.loads(seal(envelope, request, agent))
     raw = base64.b64decode(sealed["envelope"])
     assert json.loads(raw) == envelope
-    message = REPLY_PREFIX + request.payload["nonce"].encode() + b"\n" + raw
+    message = reply_message(request.payload["nonce"], request.raw, raw)
     agent.public_key().verify(base64.b64decode(sealed["signature"]), message, ec.ECDSA(hashes.SHA256()))
 
 

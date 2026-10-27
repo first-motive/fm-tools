@@ -588,3 +588,36 @@ def test_an_offline_coordinator_keeps_its_last_key_and_an_online_one_drops_a_rem
     tower_card({"storage": {}})
     assert main(["device", "list", "--json"]) == 0
     assert _storage_keys(capsys)["fm-ws-02"] == ""
+
+
+def test_a_machine_named_only_by_its_own_hostname_is_never_trusted_for_a_key(monkeypatch, tower_card, capsys):
+    status = _with_tower()
+    # The real fm-ws-02 holds the tailnet name; a node calling itself fm-ws-02 gets a suffixed one.
+    status["Peer"]["key-r"] = {"HostName": "fm-ws-03", "DNSName": "fm-ws-03-1.tail1234.ts.net.",
+                               "TailscaleIPs": ["100.64.0.9"], "Online": True}
+    monkeypatch.setattr(device, "_tailscale_status", lambda: status)
+    calls = tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    keys = _storage_keys(capsys)
+    assert keys["fm-ws-03"] == ""
+    assert all("fm-ws-03-1.tail1234.ts.net" not in call for call in [" ".join(c) for c in calls])
+
+
+def test_two_rows_with_one_name_get_no_key(monkeypatch, tower_card, capsys):
+    status = _with_tower()
+    status["Peer"]["key-r"] = {"HostName": "x", "DNSName": "fm-ws-02.other.ts.net.",
+                               "TailscaleIPs": ["100.64.0.9"], "Online": True}
+    monkeypatch.setattr(device, "_tailscale_status", lambda: status)
+    tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert [row["storage_key"] for row in rows if row["name"] == "fm-ws-02"] == ["", ""]
+
+
+def test_an_unreadable_card_keeps_the_key_last_read(monkeypatch, tower_card, capsys):
+    tower_card({"storage": {"agent_key": AGENT_KEY}})
+    assert main(["device", "list", "--json"]) == 0
+    capsys.readouterr()
+    tower_card(device.subprocess.TimeoutExpired("ssh", device.KIND_CONNECT_TIMEOUT))
+    assert main(["device", "list", "--json"]) == 0
+    assert _storage_keys(capsys)["fm-ws-02"] == AGENT_KEY

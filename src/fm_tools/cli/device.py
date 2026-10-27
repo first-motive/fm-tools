@@ -77,6 +77,10 @@ class Device:
     # A storage coordinator's agent key (the card's `storage.agent_key`), which
     # Desktop checks the agent's replies against; empty otherwise.
     storage_key: str = ""
+    # True when the tailnet's own name for the machine is ``name``. A name taken
+    # from the machine's self-declared hostname is not attested: any node can
+    # call itself fm-ws-01.
+    attested: bool = False
 
     @property
     def user(self) -> str:
@@ -149,6 +153,7 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
     # belongs to somebody else.
     name = dns.split(".")[0] if dns else ""
     role = role_of(name)
+    attested = bool(role)
     if not role:
         name = hostname
         role = role_of(name)
@@ -163,6 +168,7 @@ def _peer_device(entry: dict, this_machine: bool = False) -> Device | None:
         online=bool(entry.get("Online", False)) or this_machine,
         addresses=addresses,
         this_machine=this_machine,
+        attested=attested,
     )
 
 
@@ -193,6 +199,7 @@ def _with_local_card(device: Device) -> Device:
         workspace=str(card.workspace),
         kind=card.robot if card.role == "robot" else "",
         storage_key=_storage_key_of(_local_card_data(card.path)),
+        attested=True,  # this machine's own card, read here
     )
 
 
@@ -247,8 +254,8 @@ def _write_kind_cache(kinds: dict[str, str]) -> None:
         pass
 
 
-def _remote_card(device: Device) -> dict:
-    """A peer's own card, or ``{}`` when it cannot be read.
+def _remote_card(device: Device) -> dict | None:
+    """A peer's own card, or ``None`` when it cannot be read.
 
     ``BatchMode`` refuses every prompt and ``ConnectTimeout`` bounds the wait, so
     a machine that needs a password or does not answer costs seconds, not a
@@ -271,25 +278,27 @@ def _remote_card(device: Device) -> dict:
             timeout=KIND_CONNECT_TIMEOUT * 2,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {}
+        return None
     if done.returncode != 0:
-        return {}
+        return None
     try:
         card = jsonlib.loads(done.stdout)
     except ValueError:
-        return {}
-    return card if isinstance(card, dict) else {}
+        return None
+    return card if isinstance(card, dict) else None
 
 
 def _remote_kind(device: Device) -> str:
     """The robot kind a robot's own card declares, or ``""`` when unreadable."""
-    kind = _remote_card(device).get("robot", "")
+    kind = (_remote_card(device) or {}).get("robot", "")
     return kind if kind in ROBOT_KINDS else ""
 
 
-def _remote_storage_key(device: Device) -> str:
-    """The storage agent key a peer's own card declares, or ``""``."""
-    return _storage_key_of(_remote_card(device))
+def _remote_storage_key(device: Device) -> str | None:
+    """The storage agent key a peer's own card declares, ``""`` when it names
+    none, or ``None`` when the card could not be read at all."""
+    card = _remote_card(device)
+    return None if card is None else _storage_key_of(card)
 
 
 def with_kinds(found: list[Device]) -> list[Device]:
@@ -329,7 +338,11 @@ def with_storage_keys(found: list[Device]) -> list[Device]:
     The key is read from the coordinator's own card over ssh, which tailnet SSH
     authenticates. That is what lets Desktop trust an agent on the
     unauthenticated fabric: a reply signed by this key comes from the machine
-    the card is on. Only workstation rows are asked; every other row keeps ``""``.
+    the card is on. Only a workstation the tailnet itself names is asked, never
+    one named by its own hostname, and every other row keeps ``""``.
+
+    tradeoff: an offline coordinator reports the last key read, with no expiry,
+    so a rotated key is trusted until the machine is next seen online.
     """
     path = _storage_key_cache_path()
     try:
@@ -338,17 +351,23 @@ def with_storage_keys(found: list[Device]) -> list[Device]:
         cache = {}
     cache = {str(name): key for name, key in cache.items() if isinstance(key, str)} if isinstance(cache, dict) else {}
     learned = dict(cache)
+    # Two rows with one name means one of them is not the machine the name
+    # stands for; neither gets a key.
+    names = [device.name for device in found]
     result = []
     for device in found:
-        if device.role != "workstation":
-            result.append(device)
+        if device.role != "workstation" or not device.attested or names.count(device.name) > 1:
+            result.append(replace(device, storage_key=""))
             continue
         key = device.storage_key
         if not key and device.online and not device.this_machine:
-            key = _remote_storage_key(device)
-            # An online coordinator that names no key has none: forget the old one.
-            learned.pop(device.name, None)
-        key = key or ("" if device.online else learned.get(device.name, ""))
+            read = _remote_storage_key(device)
+            if read is not None:
+                # A card that was read and names no key has none: forget the
+                # old one. One that could not be read changes nothing.
+                learned.pop(device.name, None)
+                key = read
+        key = key or learned.get(device.name, "")
         if key:
             learned[device.name] = key
         result.append(replace(device, storage_key=key))
