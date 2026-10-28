@@ -36,7 +36,7 @@ dev = ["pytest", "pytest-asyncio", "ruff", "cryptography>=42"]
 archive = ["boto3", "PyYAML"]
 # The coordinator's Zenoh service. The zenoh wheel is pinned to 1.9.0, the
 # version fm-comms' router and the robot and sim agents run.
-storage-agent = ["eclipse-zenoh==1.9.0", "cryptography>=42"]
+storage-agent = ["eclipse-zenoh==1.10.1", "cryptography>=42"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fm_tools"]
