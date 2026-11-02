@@ -24,10 +24,13 @@ def workspace(tmp_path, monkeypatch):
     (ros2 / "docs" / "diagrams" / "loop.d2").write_text("a -> b\n")
     (ros2 / "docs" / "diagrams" / "loop.svg").write_text("<svg/>\n")
     (ros2 / "docs" / "diagrams" / "styles.d2").write_text("# palette\n")
+    (ros2 / "docs" / "diagrams" / "workcell.tldr").write_text("{}\n")
+    (ros2 / "docs" / "diagrams" / "workcell.svg").write_text("<svg/>\n")
     # A build tree is not a source of diagrams, even when a vendored package
     # left one there.
     (ros2 / "build" / "pkg").mkdir(parents=True)
     (ros2 / "build" / "pkg" / "copied.d2").write_text("a -> b\n")
+    (ros2 / "build" / "pkg" / "copied.tldr").write_text("{}\n")
 
     data = repo("fm-data")
     (data / "docs" / "diagrams" / "capture_lifecycle.d2").write_text("a -> b\n")
@@ -45,13 +48,13 @@ def test_lists_every_repo_that_adopted_the_renderer(workspace):
 def test_palette_and_build_trees_are_not_diagrams(workspace):
     """styles.d2 is an import, and a build tree is a copy — render.sh skips both."""
     names = {row.name for row in diagram.diagrams(workspace)}
-    assert names == {"capture_lifecycle", "loop"}
+    assert names == {"capture_lifecycle", "loop", "workcell"}
 
 
 def test_reports_which_diagrams_have_a_committed_render(workspace):
     """The manifest's whole job: which picture exists, and which is missing."""
     rendered = {row.name: row.rendered for row in diagram.diagrams(workspace)}
-    assert rendered == {"loop": True, "capture_lifecycle": False}
+    assert rendered == {"loop": True, "workcell": True, "capture_lifecycle": False}
 
 
 def test_multi_board_directory_counts_as_rendered(workspace):
@@ -74,6 +77,16 @@ def test_list_json_is_the_versioned_envelope(workspace, capsys):
     assert payload["verb"] == "diagram"
     assert {row["repo"] for row in payload["data"]} == {"fm-data", "fm_ros2"}
     assert payload["data"][0]["title"] == "Capture Lifecycle"
+
+
+def test_tldraw_source_lists_beside_its_exported_svg(workspace, capsys):
+    """A .tldr is a diagram source like a .d2, rendered once its sibling SVG exists."""
+    assert main(["diagram", "list", "--json"]) == exits.OK
+    rows = json.loads(capsys.readouterr().out)["data"]
+    row = next(row for row in rows if row["name"] == "workcell")
+    assert row["source"].endswith("docs/diagrams/workcell.tldr")
+    assert row["svg"].endswith("docs/diagrams/workcell.svg")
+    assert row["rendered"] is True
 
 
 def test_dry_run_prints_the_delegate_and_runs_nothing(workspace, capsys):
@@ -132,3 +145,30 @@ def test_diagram_is_reported_as_a_verb(workspace, capsys):
     payload = json.loads(capsys.readouterr().out)
     row = next(entry for entry in payload["data"] if entry["verb"] == "diagram")
     assert row["kind"] == "forwarding"
+
+
+def test_watch_rerenders_the_repo_a_changed_tldr_belongs_to(workspace, monkeypatch):
+    """fswatch is handed the .tldr sources, and a save re-renders only the owning repo."""
+    ros2 = workspace / "fm_ros2"
+    changed = ros2 / "docs" / "diagrams" / "workcell.tldr"
+    watched, rendered = [], []
+
+    class FakeWatcher:
+        def __init__(self, command, **_):
+            watched.extend(command)
+            self.stdout = [f"{changed}\n"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(diagram.shutil, "which", lambda _: "/usr/bin/fswatch")
+    monkeypatch.setattr(diagram.subprocess, "Popen", FakeWatcher)
+    monkeypatch.setattr(
+        diagram.subprocess, "run", lambda command, cwd, **_: rendered.append(cwd)
+    )
+    assert main(["diagram", "watch"]) == exits.OK
+    assert str(changed) in watched
+    assert rendered == [ros2]
