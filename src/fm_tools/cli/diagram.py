@@ -7,8 +7,8 @@ the view *across* repos. A picture of the system is spread over fm-ros2, fm-data
 fm-comms and the rest, and until this verb the only way to see the set was to
 remember which repos had one and open each in turn.
 
-``fm diagram list --json`` is that set, machine-readable: one row per ``.d2``
-source with its rendered sidecar beside it. Desktop's diagram surface reads this
+``fm diagram list --json`` is that set, machine-readable: one row per ``.d2`` or
+``.tldr`` source with its rendered sidecar beside it. Desktop's diagram surface reads this
 manifest rather than carrying its own list, so a diagram added in any repo shows
 up in the app with no Swift change — the same relationship the launch registry
 already has with the robots.
@@ -17,7 +17,7 @@ The other three verbs are the authoring loop. ``render`` and ``check`` delegate
 to each repo's own ``render.sh``, never re-implementing it: the gate CI runs and
 the command a developer runs have to be the same command, or a green check means
 nothing. ``watch`` is the one thing no repo script owns — an fswatch over every
-``.d2`` in the workspace that re-renders the repo a file belongs to, so the SVG
+``.d2`` and ``.tldr`` in the workspace that re-renders the repo a file belongs to, so the SVG
 under review is never the stale one.
 
     fm diagram list [--json]     every diagram, and whether it is rendered
@@ -45,6 +45,10 @@ from .payload import emit
 # named in fm-tools.
 RENDERER = Path("docs/diagrams/render.sh")
 
+# The diagram sources render.sh draws: d2 text, and tldraw canvases exported to
+# the same ``<name>.svg`` sidecar. Both kinds share every discovery rule below.
+SOURCE_PATTERNS = ("*.d2", "*.tldr")
+
 # styles.d2 is an import-only palette, not a diagram. render.sh skips it by the
 # same rule, and the two must agree or this verb lists a file the renderer will
 # never draw.
@@ -57,7 +61,7 @@ SKIP_DIRS = frozenset({".git", "build", "install", "log"})
 
 @dataclass(frozen=True)
 class Diagram:
-    """One ``.d2`` source in the workspace, and the render committed beside it."""
+    """One ``.d2`` or ``.tldr`` source in the workspace, and the render committed beside it."""
 
     repo: str
     name: str
@@ -74,7 +78,7 @@ class Diagram:
 def _sources(repo: Path) -> list[Path]:
     """Every diagram source in one checkout, in the order render.sh walks them."""
     found = []
-    for path in sorted(repo.rglob("*.d2")):
+    for path in sorted(path for pattern in SOURCE_PATTERNS for path in repo.rglob(pattern)):
         if path.name == PALETTE:
             continue
         if SKIP_DIRS.intersection(path.relative_to(repo).parts):
@@ -181,7 +185,7 @@ def _delegate(found: list[Path], check: bool, dry_run: bool) -> int:
 
 
 def _watch(found: list[Path]) -> int:
-    """Re-render a repo whenever one of its ``.d2`` files is written.
+    """Re-render a repo whenever one of its ``.d2`` or ``.tldr`` files is written.
 
     fswatch rather than a poll loop: a diagram is edited in bursts, and a poll
     slow enough to be cheap is slow enough to show the previous drawing. The
@@ -220,7 +224,7 @@ def _watch(found: list[Path]) -> int:
 
 USAGE = """usage: fm diagram <verb> [args...]
 
-  list [--json]              every .d2 in the workspace, and its committed render
+  list [--json]              every .d2/.tldr in the workspace, and its committed render
   render [--repo R]          re-render, through each repo's own render.sh
   check [--repo R]           fail on a diagram whose committed SVG drifted
   watch [--repo R]           re-render on every save (needs fswatch)

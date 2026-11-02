@@ -462,7 +462,7 @@ from its source. What no repo could answer is what the workspace holds *in
 total*, which is the question anyone building a picture of the system asks first.
 
 ```bash
-fm diagram list --json                # every .d2 in the workspace, and its render
+fm diagram list --json                # every .d2/.tldr in the workspace, and its render
 fm diagram render --repo fm-data      # re-render, through that repo's render.sh
 fm diagram check                      # the drift gate CI runs, across every repo
 fm diagram watch                      # re-render on save while you edit (fswatch)
