@@ -106,9 +106,21 @@ def test_setup_clones_missing_repos_and_runs_installers(tmp_path, local_registry
     cloned = {row["name"] for row in payload["steps"] if row["action"] == "clone" and row["ok"]}
     installed = {row["name"] for row in payload["steps"] if row["action"] == "install"}
     applicable = {repo.name for repo in REPOS if repo.applies_to(current_platform())}
+    installable = {repo.name for repo in REPOS if "install.sh" in repo.entry_points}
     assert cloned == applicable
-    assert installed == applicable
+    assert installed == applicable & installable
     assert (workspace / FM_ROS2.local_dir / ".git").is_dir()
+
+
+@pytest.mark.parametrize("name", ["fm-data", "fm-tactile"])
+def test_repo_without_an_installer_is_cloned_but_not_installed(name, tmp_path, local_registry, capsys):
+    # Neither declares install.sh: the colcon workspace builds fm-data, and
+    # fm-tactile's front door is its verb script.
+    workspace = tmp_path / "workspace"
+    run_setup(json_out=True, base=workspace)
+    payload = json.loads(capsys.readouterr().out)["data"]
+    for_repo = [row["action"] for row in payload["steps"] if row["name"] == name]
+    assert for_repo == ["clone"]
 
 
 def test_existing_clone_is_left_untouched(tmp_path, local_registry, capsys):
@@ -230,7 +242,8 @@ def test_setup_without_a_role_forwards_nothing(tmp_path, monkeypatch, capsys):
 
     run_setup(json_out=True, base=tmp_path / "workspace")
     capsys.readouterr()
-    assert recorder.read_text().strip().splitlines() == ["[]"] * len(REPOS)
+    installable = [repo for repo in REPOS if "install.sh" in repo.entry_points]
+    assert recorder.read_text().strip().splitlines() == ["[]"] * len(installable)
 
 
 def test_role_verb_dispatches_via_main(tmp_path, monkeypatch, capsys):

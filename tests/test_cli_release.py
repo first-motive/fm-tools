@@ -225,6 +225,7 @@ RELEASE_ENTRY_POINT = "scripts/dev/cut-release.sh"
 # script yet.
 # fm-data and fm-policy join them as well: fm-data is released with the colcon
 # workspace that builds it, and fm-policy has no cut script yet.
+# fm-skills and fm-tactile join them: neither has a cut script yet.
 NO_SCRIPTED_RELEASE = {
     "fm-ai",
     "fm-desktop",
@@ -233,6 +234,8 @@ NO_SCRIPTED_RELEASE = {
     "fm-data",
     "fm-policy",
     "fm-sim",
+    "fm-skills",
+    "fm-tactile",
 }
 
 
