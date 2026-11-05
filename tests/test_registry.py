@@ -25,6 +25,8 @@ EXPECTED = {
     "fm-desktop",
     "fm-robot-agent",
     "fm-sim",
+    "fm-skills",
+    "fm-tactile",
     "fm-agent",
     "fm-tools",
 }
@@ -49,7 +51,9 @@ def test_every_other_repo_clones_into_its_own_name():
 
 def test_every_installable_repo_declares_an_installer():
     # fm-data has no install.sh: the colcon workspace containing it builds it.
-    assert all("install.sh" in repo.entry_points for repo in REPOS if repo.name != "fm-data")
+    # fm-tactile has none either: its verb script is its only front door.
+    no_installer = {"fm-data", "fm-tactile"}
+    assert all("install.sh" in repo.entry_points for repo in REPOS if repo.name not in no_installer)
 
 
 def test_repo_names_preserve_listing_order():
@@ -249,3 +253,17 @@ def test_data_checkout_prefers_assembled_tree_and_preserves_occupied_paths(tmp_p
     assert data.checkout(tmp_path) == assembled, "an occupied canonical path must not be bypassed"
     (assembled / ".git").mkdir()
     assert data.checkout(tmp_path) == assembled, "the appliance checkout must win when both exist"
+
+
+def test_fm_skills_runs_everywhere_through_docker():
+    """The robot PC runs the stack; a Mac runs `skills fake` in its own runtime."""
+    skills = next(repo for repo in REPOS if repo.name == "fm-skills")
+    assert skills.entry_points == ("install.sh", "run.sh")
+    assert skills.platforms == ()
+    assert {check.target for check in skills.checks if check.kind == "tool"} == {"git", "docker"}
+
+
+def test_fm_tactile_has_only_its_verb_script_as_a_front_door():
+    tactile = next(repo for repo in REPOS if repo.name == "fm-tactile")
+    assert tactile.entry_points == ("scripts/run/tactile.sh",)
+    assert tactile.platforms == ()

@@ -334,6 +334,27 @@ REPOS: tuple[Repo, ...] = (
         tools=("uv",),
     ),
     _repo(
+        # The skills layer: perception, task, and controller nodes in one
+        # container on the robot PC, plus the predicted-contact model. It mounts
+        # the `skills` verb via its fm.json. No platform declaration: the robot
+        # PC runs the stack, and a Mac runs `skills fake` against its own
+        # container runtime.
+        #
+        # docker, because install.sh and scripts/run/skills.sh both drive
+        # docker compose.
+        "fm-skills",
+        entry_points=("install.sh", "run.sh"),
+        tools=("docker",),
+    ),
+    _repo(
+        # The tactile layer: FlexiTac pad drivers and the measured-contact
+        # reducer, run beside an Anvil's teleop. It has no installer, so `fm
+        # setup` clones it and installs nothing; its one front door is the
+        # `tactile` verb script, mounted from fm.json.
+        "fm-tactile",
+        entry_points=("scripts/run/tactile.sh",),
+    ),
+    _repo(
         # The Hermes agent: it answers Slack DMs by running an allowlisted subset
         # of the `fm` CLI against a local model. macOS only because it is a host
         # service installed on the Rune Mac mini under its own `fm` account,
