@@ -251,9 +251,17 @@ def _classify(config: dict, item: dict, location: dict, destination: dict, min_l
         return {"id": item["id"], "skip": "not_at_location"}
     try:
         root, manifest = _source(config, item, location)
+        newest = max((root / member["path"]).lstat().st_mtime for member in manifest["files"])
     except Refusal as exc:
         return {"id": item["id"], "skip": "busy" if exc.code in BUSY else exc.code}
-    if max((root / member["path"]).lstat().st_mtime for member in manifest["files"]) > now - min_local_days * 86400:
+    except OSError as exc:
+        # Kept apart from a malformed take, so a failing disk reads as one.
+        return {"id": item["id"], "skip": "source_io_error", "detail": str(exc)[:200]}
+    except ValueError as exc:
+        # fm-data raises plain errors for a take it cannot parse (a bag with no
+        # MCAP, say); that take is skipped, never the whole batch.
+        return {"id": item["id"], "skip": "unreadable_source", "detail": str(exc)[:200]}
+    if newest > now - min_local_days * 86400:
         return {"id": item["id"], "skip": "too_young"}
     archived = any(row["location_id"] == destination["id"] and row["presence"] == "present"
                    and row.get("revision") == manifest["revision"] and row.get("receipt") == _receipt_key(manifest)
@@ -276,7 +284,8 @@ def offload_plan(args, config: dict, library: object, state: Path) -> dict:
     plan = {"kind": "offload", "contract_version": 1, "configuration_digest": _digest(config), "revision": args.revision,
             "location": location["id"], "destination": destination["id"], "min_local_days": min_local_days,
             "items": [row for row in rows if "skip" not in row],
-            "skipped": [{"id": row["id"], "reason": row["skip"]} for row in rows if "skip" in row],
+            "skipped": [{"id": row["id"], "reason": row["skip"]} | ({"detail": row["detail"]} if "detail" in row else {})
+                        for row in rows if "skip" in row],
             "created_at": int(now), "expires_at": int(now) + 86400}
     plan["id"] = _digest(plan)
     (state / "plans").mkdir(mode=0o700, exist_ok=True)
