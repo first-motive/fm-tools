@@ -381,6 +381,8 @@ def takes(tmp_path, monkeypatch):
             raise Refusal("source_busy_or_unknown")
         if item["id"] == "broken":
             raise ValueError("source bag must contain metadata.yaml and an MCAP or DB3 shard")
+        if item["id"] == "unindexed":
+            raise KeyError("path")
         if item["id"] == "failing":
             raise OSError(5, "Input/output error")
         if item["id"] == "vanished":
@@ -640,7 +642,8 @@ def test_a_failed_release_records_no_verified_copy(job, monkeypatch):
 
 
 @pytest.mark.parametrize("take, reason", [
-    ("broken", "unreadable_source"), ("failing", "source_io_error"), ("vanished", "source_io_error"),
+    ("broken", "unreadable_source"), ("unindexed", "unreadable_source"),
+    ("failing", "source_io_error"), ("vanished", "source_io_error"),
 ])
 def test_one_bad_take_is_skipped_not_the_batch(takes, tmp_path, take, reason):
     library = _Library([_item("old"), _item(take)])
@@ -661,3 +664,24 @@ def test_a_client_forwards_offload_to_the_coordinator_over_ssh(monkeypatch):
 
     assert archive_transfer.client_archive(["--host", "fm-ws-01", "offload", "show", "f" * 64]) == 0
     assert sent[0][-1] == "fm archive offload show " + "f" * 64
+
+
+@pytest.mark.parametrize("code, reason", [("state_unreadable", "state_unreadable"), (None, "archive_provider_failed")])
+def test_an_offload_job_reports_why_a_release_was_refused(monkeypatch, tmp_path, code, reason):
+    from fm_tools import data_jobs
+
+    class Refused(RuntimeError):
+        pass
+
+    error = Refused("data-use lock is unavailable")
+    if code:
+        error.code = code
+
+    def refuse(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(archive_offload, "run_offload", refuse)
+    request = {"operation": "archive_offload", "parameters": {"plan_id": "p", "configuration_digest": "d"}}
+
+    with pytest.raises(ValueError, match=reason):
+        data_jobs._run(request, tmp_path / "cancel")

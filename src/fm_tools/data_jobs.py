@@ -246,7 +246,11 @@ def _run(request: dict, cancel_file: Path) -> dict:
             return run(**parameters, checkpoint=checkpoint,
                        progress=lambda value: _atomic(cancel_file.with_name("progress.json"), value))
         except RuntimeError as exc:
-            raise ValueError("archive_provider_failed") from exc
+            # fm-data's StorageRefusal is a RuntimeError; its code says why a
+            # release was refused, which a generic provider failure would hide.
+            code = getattr(exc, "code", None)
+            known = isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,80}", code)
+            raise ValueError(code if known else "archive_provider_failed") from exc
     if request["operation"] in {"preview", "split", "verify"}:
         from fm_tools import data_derive, data_split, data_handoff
         action = {"preview": data_derive.preview, "split": data_split.split, "verify": data_handoff.verify}[request["operation"]]

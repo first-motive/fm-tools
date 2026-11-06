@@ -257,10 +257,11 @@ def _classify(config: dict, item: dict, location: dict, destination: dict, min_l
     except OSError as exc:
         # Kept apart from a malformed take, so a failing disk reads as one.
         return {"id": item["id"], "skip": "source_io_error", "detail": str(exc)[:200]}
-    except ValueError as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         # fm-data raises plain errors for a take it cannot parse (a bag with no
-        # MCAP, say); that take is skipped, never the whole batch.
-        return {"id": item["id"], "skip": "unreadable_source", "detail": str(exc)[:200]}
+        # MCAP, or a session-index row with no path); that take is skipped,
+        # never the whole batch.
+        return {"id": item["id"], "skip": "unreadable_source", "detail": f"{type(exc).__name__}: {exc}"[:200]}
     if newest > now - min_local_days * 86400:
         return {"id": item["id"], "skip": "too_young"}
     archived = any(row["location_id"] == destination["id"] and row["presence"] == "present"
