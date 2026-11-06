@@ -379,6 +379,12 @@ def takes(tmp_path, monkeypatch):
     def source(config, item, location):
         if item["id"] == "busy":
             raise Refusal("source_busy_or_unknown")
+        if item["id"] == "broken":
+            raise ValueError("source bag must contain metadata.yaml and an MCAP or DB3 shard")
+        if item["id"] == "failing":
+            raise OSError(5, "Input/output error")
+        if item["id"] == "vanished":
+            return tmp_path / "gone", _manifest("vanished")
         return tmp_path / item["id"], _manifest(item["id"])
 
     monkeypatch.setattr(archive_offload, "_source", source)
@@ -631,3 +637,27 @@ def test_a_failed_release_records_no_verified_copy(job, monkeypatch):
         archive_offload.run_offload(job.plan_id, job.digest, checkpoint=lambda: None)
 
     assert archive_offload._open_library(job.state).scans == []
+
+
+@pytest.mark.parametrize("take, reason", [
+    ("broken", "unreadable_source"), ("failing", "source_io_error"), ("vanished", "source_io_error"),
+])
+def test_one_bad_take_is_skipped_not_the_batch(takes, tmp_path, take, reason):
+    library = _Library([_item("old"), _item(take)])
+
+    plan = archive_offload.offload_plan(_plan_args("old", take), {"locations": [TAKES, DEST]}, library, tmp_path)
+
+    assert [row["id"] for row in plan["items"]] == ["old"]
+    (skipped,) = plan["skipped"]
+    assert (skipped["id"], skipped["reason"]) == (take, reason) and skipped["detail"]
+
+
+def test_a_client_forwards_offload_to_the_coordinator_over_ssh(monkeypatch):
+    from fm_tools import archive_transfer
+
+    sent = []
+    monkeypatch.setattr(archive_transfer, "_shared_connection", lambda: [])
+    monkeypatch.setattr("subprocess.run", lambda argv, check: sent.append(argv) or SimpleNamespace(returncode=0))
+
+    assert archive_transfer.client_archive(["--host", "fm-ws-01", "offload", "show", "f" * 64]) == 0
+    assert sent[0][-1] == "fm archive offload show " + "f" * 64

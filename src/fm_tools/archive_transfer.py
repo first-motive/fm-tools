@@ -228,7 +228,7 @@ def client_archive(arguments: list[str]) -> int:
     if arguments[:2] == ["copy", "download"]:
         from fm_tools.archive_workflow import main
         return main(arguments)
-    if len(arguments) < 4 or arguments[0] != "--host" or not HOST.fullmatch(arguments[1]) or arguments[2] not in {"library", "copy", "jobs"}:
+    if len(arguments) < 4 or arguments[0] != "--host" or not HOST.fullmatch(arguments[1]) or arguments[2] not in {"library", "copy", "jobs", "offload"}:
         print(json.dumps({"contract_version": 1, "ok": False, "error_code": "client_requires_coordinator_host"}))
         return 3
     return subprocess.run([*SSH, *_shared_connection(), "--", arguments[1],

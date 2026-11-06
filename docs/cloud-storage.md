@@ -291,6 +291,8 @@ and `bytes_uploaded`. It skips items with a reason instead of failing:
 | `too_young` | The newest file is younger than `min_local_days`. |
 | `awaiting_legacy_upload` | A take the legacy uploader owns has no managed copy yet. |
 | `not_at_location` | The item has no present copy at this location. |
+| `unreadable_source` | fm-data cannot parse the take, for example a bag with no MCAP. |
+| `source_io_error` | Reading the source failed; `detail` names the error. |
 
 Any other source refusal is reported as its own code.
 
