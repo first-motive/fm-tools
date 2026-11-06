@@ -106,7 +106,7 @@ def test_setup_clones_missing_repos_and_runs_installers(tmp_path, local_registry
     cloned = {row["name"] for row in payload["steps"] if row["action"] == "clone" and row["ok"]}
     installed = {row["name"] for row in payload["steps"] if row["action"] == "install"}
     applicable = {repo.name for repo in REPOS if repo.applies_to(current_platform())}
-    installable = {repo.name for repo in REPOS if "install.sh" in repo.entry_points}
+    installable = {repo.name for repo in REPOS if repo.runs_installer_on_setup}
     assert cloned == applicable
     assert installed == applicable & installable
     assert (workspace / FM_ROS2.local_dir / ".git").is_dir()
@@ -121,6 +121,14 @@ def test_repo_without_an_installer_is_cloned_but_not_installed(name, tmp_path, l
     payload = json.loads(capsys.readouterr().out)["data"]
     for_repo = [row["action"] for row in payload["steps"] if row["name"] == name]
     assert for_repo == ["clone"]
+
+
+def test_repo_whose_installer_needs_a_role_is_cloned_but_not_installed(tmp_path, local_registry, capsys):
+    # fm-comms' installer refuses to run without this machine's --role.
+    workspace = tmp_path / "workspace"
+    run_setup(json_out=True, base=workspace)
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert [row["action"] for row in payload["steps"] if row["name"] == "fm-comms"] == ["clone"]
 
 
 def test_existing_clone_is_left_untouched(tmp_path, local_registry, capsys):
@@ -242,7 +250,7 @@ def test_setup_without_a_role_forwards_nothing(tmp_path, monkeypatch, capsys):
 
     run_setup(json_out=True, base=tmp_path / "workspace")
     capsys.readouterr()
-    installable = [repo for repo in REPOS if "install.sh" in repo.entry_points]
+    installable = [repo for repo in REPOS if repo.runs_installer_on_setup]
     assert recorder.read_text().strip().splitlines() == ["[]"] * len(installable)
 
 
