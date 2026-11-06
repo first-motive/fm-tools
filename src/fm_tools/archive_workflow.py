@@ -37,6 +37,10 @@ class Refusal(ValueError):
         super().__init__(code)
 
 
+#: Adapters whose local copy an offload may release, and the default minimum
+#: age in days of a local item before it may be released.
+OFFLOAD_ADAPTERS = frozenset({"recordings", "lerobot"})
+OFFLOAD_MIN_LOCAL_DAYS = 7
 #: An operator's name as the library records it: who acted, never a credential.
 OPERATOR_NAME = r"[a-z0-9][a-z0-9._-]{0,63}"
 #: Every P-256 SubjectPublicKeyInfo starts with these bytes (the EC algorithm,
@@ -88,14 +92,22 @@ def configuration() -> tuple[object, dict]:
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", location["id"])
                 or location["id"] == "operator-download" or location["id"] in identities or not isinstance(location.get("name"), str)):
             raise Refusal("invalid_location")
-        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer", "remote_location"}
+        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer", "remote_location", "min_local_days"}
                 or location.get("kind") not in {"tower", "robot", "jetson", "backblaze", "mac", "other"}
                 or location.get("adapter") not in {"recordings", "lerobot", "catalogue", "anvil", "evidence", "imports", "unsupported"}
                 or location.get("archive_writer", "legacy") not in {"legacy", "coordinator"}):
             raise Refusal("invalid_location")
         capabilities = location.get("capabilities", [])
-        if not isinstance(capabilities, list) or any(value not in {"browse", "copy_source", "copy_destination"} for value in capabilities):
+        if not isinstance(capabilities, list) or any(value not in {"browse", "copy_source", "copy_destination", "offload"} for value in capabilities):
             raise Refusal("invalid_capabilities")
+        # Offload releases local bytes, so it is held to the governed local sets
+        # whose release fm-data owns: never a remote, cloud or unknown location.
+        if "offload" in capabilities and (location.get("adapter") not in OFFLOAD_ADAPTERS or location.get("ssh_host")
+                                          or location.get("kind") == "backblaze" or "root" not in location):
+            raise Refusal("invalid_capabilities")
+        days = location.setdefault("min_local_days", OFFLOAD_MIN_LOCAL_DAYS)
+        if isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= 3650:
+            raise Refusal("invalid_location")
         for key, pattern in (("remote_location", r"[A-Za-z0-9_.-]{1,100}"), ("ssh_host", r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}")):
             if key in location and (not isinstance(location[key], str) or not re.fullmatch(pattern, location[key])):
                 raise Refusal("invalid_location")
