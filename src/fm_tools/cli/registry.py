@@ -134,6 +134,10 @@ class Repo:
 
     ``role_args`` declares what this repo's installer is given for a machine
     role. A repo with none is installed with no arguments whatever the role.
+
+    ``setup_installs`` is False for a repo whose installer needs a choice only
+    the operator can make for this machine, such as which role it plays. ``fm
+    setup`` clones it and leaves the install to ``fm install <repo> <args>``.
     """
 
     name: str
@@ -145,6 +149,7 @@ class Repo:
     release_script: str = ""
     platforms: tuple[str, ...] = ()
     role_args: tuple[RoleArgs, ...] = ()
+    setup_installs: bool = True
 
     def __post_init__(self) -> None:
         # A typo here would be invisible: an unknown platform matches no machine,
@@ -170,6 +175,11 @@ class Repo:
     def applies_to(self, plat: str) -> bool:
         """Whether this repo belongs on a machine running ``plat``."""
         return not self.platforms or plat in self.platforms
+
+    @property
+    def runs_installer_on_setup(self) -> bool:
+        """Whether ``fm setup`` runs this repo's install.sh after cloning it."""
+        return "install.sh" in self.entry_points and self.setup_installs
 
     def checkout(self, root: Path) -> Path:
         """Use the assembled data checkout first, or an existing sibling clone.
@@ -206,6 +216,7 @@ def _repo(
     local_dir: str = "",
     platforms: tuple[str, ...] = (),
     role_args: tuple[RoleArgs, ...] = (),
+    setup_installs: bool = True,
 ) -> Repo:
     # ``tools`` names a binary every applicable platform needs; ``platform_tools``
     # pairs a platform with the one binary that platform needs instead — the
@@ -230,6 +241,7 @@ def _repo(
         release_script=release_script,
         platforms=platforms,
         role_args=role_args,
+        setup_installs=setup_installs,
     )
 
 
@@ -353,6 +365,18 @@ REPOS: tuple[Repo, ...] = (
         # `tactile` verb script, mounted from fm.json.
         "fm-tactile",
         entry_points=("scripts/run/tactile.sh",),
+    ),
+    _repo(
+        # The transport: the Zenoh router, the bridges, and the client tools.
+        # Its installer takes a --role that is one machine's choice (the router
+        # runs on Rune alone), so `fm setup` clones it for status, update, and
+        # its verbs, and installs nothing. Install by hand with `fm install
+        # fm-comms --role <role>`; fm-setup does that for a fleet Linux host, at
+        # a pinned tag. No platform declaration: the router runs on a Mac, the
+        # bridges on Linux.
+        "fm-comms",
+        entry_points=("install.sh",),
+        setup_installs=False,
     ),
     _repo(
         # The Hermes agent: it answers Slack DMs by running an allowlisted subset
