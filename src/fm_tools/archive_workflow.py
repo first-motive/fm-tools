@@ -28,7 +28,7 @@ from pathlib import Path
 
 from fm_tools.cli.machine import CardError, read_card
 from fm_tools.data_refine import _digest
-from fm_tools.data_jobs import _atomic
+from fm_tools.data_jobs import ARCHIVE_JOBS, _atomic
 
 
 class Refusal(ValueError):
@@ -355,7 +355,7 @@ class WorkflowParser(argparse.ArgumentParser):
 
 def parser() -> argparse.ArgumentParser:
     result = WorkflowParser(prog="fm archive")
-    result.add_argument("group", choices=["library", "copy", "jobs"])
+    result.add_argument("group", choices=["library", "copy", "jobs", "offload"])
     result.add_argument("operation")
     result.add_argument("arguments", nargs="*")
     result.add_argument("--json", action="store_true")
@@ -755,6 +755,9 @@ def execute(args: argparse.Namespace) -> dict:
             if _digest(saved) != args.selection or saved["revision"] != args.revision:
                 raise Refusal("selection_changed")
             args.item = saved["items"]
+        if args.group == "offload":
+            from fm_tools.archive_offload import offload_execute
+            return offload_execute(args, card, config, library, state)
         if args.group == "library" and args.operation == "select":
             if args.revision is None:
                 raise Refusal("revision_required")
@@ -896,6 +899,8 @@ def execute(args: argparse.Namespace) -> dict:
             if args.operation not in {"show", "start"} or len(args.arguments) != 1:
                 raise Refusal("invalid_copy_operation")
             plan = _load_plan(state, args.arguments[0], config)
+            if plan.get("kind") == "offload":
+                raise Refusal("not_copy_plan")
             if args.operation == "show":
                 return _plan_summary(plan)
             if time.time() > plan["expires_at"] or not args.request_id:
@@ -913,7 +918,7 @@ def execute(args: argparse.Namespace) -> dict:
                     for path in sorted(root.iterdir()):
                         if path.is_dir() and not path.is_symlink() and (path / "status.json").is_file():
                             row = data_jobs.status(argparse.Namespace(job_root=root, request_id=path.name))
-                            if row["operation"] == "archive_copy":
+                            if row["operation"] in ARCHIVE_JOBS:
                                 request = _read_json(path / "request.json")
                                 plan_id = request["parameters"]["plan_id"]
                                 saved_plan = _read_json(state / "plans" / (plan_id + ".json"), maximum=64 * 1024 * 1024)
@@ -928,7 +933,7 @@ def execute(args: argparse.Namespace) -> dict:
             if args.operation not in actions or len(args.arguments) != 1:
                 raise Refusal("invalid_job_operation")
             request = argparse.Namespace(job_root=root, request_id=args.arguments[0], timeout=args.timeout)
-            if data_jobs.status(request)["operation"] != "archive_copy":
+            if data_jobs.status(request)["operation"] not in ARCHIVE_JOBS:
                 raise Refusal("not_archive_job")
             result = actions[args.operation](request)
             if args.operation in {"show", "status", "wait"}:
