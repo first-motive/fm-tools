@@ -27,6 +27,7 @@ EXPECTED = {
     "fm-sim",
     "fm-skills",
     "fm-tactile",
+    "fm-comms",
     "fm-agent",
     "fm-tools",
 }
@@ -267,3 +268,11 @@ def test_fm_tactile_has_only_its_verb_script_as_a_front_door():
     tactile = next(repo for repo in REPOS if repo.name == "fm-tactile")
     assert tactile.entry_points == ("scripts/run/tactile.sh",)
     assert tactile.platforms == ()
+
+
+def test_fm_comms_is_left_for_fm_install_with_a_role():
+    """Its installer needs this machine's --role, which setup cannot choose."""
+    comms = next(repo for repo in REPOS if repo.name == "fm-comms")
+    assert comms.entry_points == ("install.sh",)
+    assert not comms.runs_installer_on_setup
+    assert comms.platforms == ()

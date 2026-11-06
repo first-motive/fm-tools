@@ -33,7 +33,7 @@ from rich.table import Table
 
 from . import exits
 from .doctor import gather_checks, render_checks
-from .install import INSTALLER, run_installer
+from .install import run_installer
 from .payload import emit
 from .registry import REPOS, Repo, current_platform
 from .workspace import resolve_root
@@ -118,8 +118,9 @@ def _execute(root: Path, role: str | None = None, plat: str | None = None) -> li
         row = _clone(repo, root) if planned["action"] == "clone" else planned
         rows.append(row)
         # A repo with no installer is cloned and left there: running its
-        # absent install.sh would fail every setup run.
-        if row["ok"] and INSTALLER in repo.entry_points:
+        # absent install.sh would fail every setup run. A repo whose installer
+        # needs the operator's choice is left for `fm install`.
+        if row["ok"] and repo.runs_installer_on_setup:
             rows.append(_install(repo, root, role))
     return rows
 
