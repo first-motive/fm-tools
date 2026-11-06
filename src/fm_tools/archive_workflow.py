@@ -28,7 +28,7 @@ from pathlib import Path
 
 from fm_tools.cli.machine import CardError, read_card
 from fm_tools.data_refine import _digest
-from fm_tools.data_jobs import _atomic
+from fm_tools.data_jobs import ARCHIVE_JOBS, _atomic
 
 
 class Refusal(ValueError):
@@ -37,6 +37,10 @@ class Refusal(ValueError):
         super().__init__(code)
 
 
+#: Adapters whose local copy an offload may release, and the default minimum
+#: age in days of a local item before it may be released.
+OFFLOAD_ADAPTERS = frozenset({"recordings", "lerobot"})
+OFFLOAD_MIN_LOCAL_DAYS = 7
 #: An operator's name as the library records it: who acted, never a credential.
 OPERATOR_NAME = r"[a-z0-9][a-z0-9._-]{0,63}"
 #: Every P-256 SubjectPublicKeyInfo starts with these bytes (the EC algorithm,
@@ -88,14 +92,22 @@ def configuration() -> tuple[object, dict]:
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", location["id"])
                 or location["id"] == "operator-download" or location["id"] in identities or not isinstance(location.get("name"), str)):
             raise Refusal("invalid_location")
-        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer", "remote_location"}
+        if (set(location) - {"id", "name", "kind", "adapter", "root", "producer_id", "ssh_host", "capabilities", "archive_writer", "remote_location", "min_local_days"}
                 or location.get("kind") not in {"tower", "robot", "jetson", "backblaze", "mac", "other"}
                 or location.get("adapter") not in {"recordings", "lerobot", "catalogue", "anvil", "evidence", "imports", "unsupported"}
                 or location.get("archive_writer", "legacy") not in {"legacy", "coordinator"}):
             raise Refusal("invalid_location")
         capabilities = location.get("capabilities", [])
-        if not isinstance(capabilities, list) or any(value not in {"browse", "copy_source", "copy_destination"} for value in capabilities):
+        if not isinstance(capabilities, list) or any(value not in {"browse", "copy_source", "copy_destination", "offload"} for value in capabilities):
             raise Refusal("invalid_capabilities")
+        # Offload releases local bytes, so it is held to the governed local sets
+        # whose release fm-data owns: never a remote, cloud or unknown location.
+        if "offload" in capabilities and (location.get("adapter") not in OFFLOAD_ADAPTERS or location.get("ssh_host")
+                                          or location.get("kind") == "backblaze" or "root" not in location):
+            raise Refusal("invalid_capabilities")
+        days = location.setdefault("min_local_days", OFFLOAD_MIN_LOCAL_DAYS)
+        if isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= 3650:
+            raise Refusal("invalid_location")
         for key, pattern in (("remote_location", r"[A-Za-z0-9_.-]{1,100}"), ("ssh_host", r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}")):
             if key in location and (not isinstance(location[key], str) or not re.fullmatch(pattern, location[key])):
                 raise Refusal("invalid_location")
@@ -343,7 +355,7 @@ class WorkflowParser(argparse.ArgumentParser):
 
 def parser() -> argparse.ArgumentParser:
     result = WorkflowParser(prog="fm archive")
-    result.add_argument("group", choices=["library", "copy", "jobs"])
+    result.add_argument("group", choices=["library", "copy", "jobs", "offload"])
     result.add_argument("operation")
     result.add_argument("arguments", nargs="*")
     result.add_argument("--json", action="store_true")
@@ -743,6 +755,9 @@ def execute(args: argparse.Namespace) -> dict:
             if _digest(saved) != args.selection or saved["revision"] != args.revision:
                 raise Refusal("selection_changed")
             args.item = saved["items"]
+        if args.group == "offload":
+            from fm_tools.archive_offload import offload_execute
+            return offload_execute(args, card, config, library, state)
         if args.group == "library" and args.operation == "select":
             if args.revision is None:
                 raise Refusal("revision_required")
@@ -884,6 +899,8 @@ def execute(args: argparse.Namespace) -> dict:
             if args.operation not in {"show", "start"} or len(args.arguments) != 1:
                 raise Refusal("invalid_copy_operation")
             plan = _load_plan(state, args.arguments[0], config)
+            if plan.get("kind") == "offload":
+                raise Refusal("not_copy_plan")
             if args.operation == "show":
                 return _plan_summary(plan)
             if time.time() > plan["expires_at"] or not args.request_id:
@@ -901,7 +918,7 @@ def execute(args: argparse.Namespace) -> dict:
                     for path in sorted(root.iterdir()):
                         if path.is_dir() and not path.is_symlink() and (path / "status.json").is_file():
                             row = data_jobs.status(argparse.Namespace(job_root=root, request_id=path.name))
-                            if row["operation"] == "archive_copy":
+                            if row["operation"] in ARCHIVE_JOBS:
                                 request = _read_json(path / "request.json")
                                 plan_id = request["parameters"]["plan_id"]
                                 saved_plan = _read_json(state / "plans" / (plan_id + ".json"), maximum=64 * 1024 * 1024)
@@ -916,7 +933,7 @@ def execute(args: argparse.Namespace) -> dict:
             if args.operation not in actions or len(args.arguments) != 1:
                 raise Refusal("invalid_job_operation")
             request = argparse.Namespace(job_root=root, request_id=args.arguments[0], timeout=args.timeout)
-            if data_jobs.status(request)["operation"] != "archive_copy":
+            if data_jobs.status(request)["operation"] not in ARCHIVE_JOBS:
                 raise Refusal("not_archive_job")
             result = actions[args.operation](request)
             if args.operation in {"show", "status", "wait"}:

@@ -53,17 +53,18 @@ MAX_NONCES = 16384
 #: Operations that change nothing: they run on the agent's read lane.
 READS = frozenset({
     "library.locations", "library.list", "library.search", "library.show", "library.files",
-    "library.preview", "library.history", "copy.show", "jobs.list", "jobs.show", "jobs.status",
+    "library.preview", "library.history", "copy.show", "offload.show",
+    "jobs.list", "jobs.show", "jobs.status",
 })
 #: Operations that change the library or start work: they run on the write lane.
 WRITES = frozenset({
     "library.refresh", "library.select", "library.folder", "library.item", "library.collection",
-    "library.protect", "copy.plan", "copy.start", "copy.verify",
+    "library.protect", "copy.plan", "copy.start", "copy.verify", "offload.plan", "offload.start",
     "jobs.pause", "jobs.resume", "jobs.retry", "jobs.cancel",
 })
 SERVED = READS | WRITES
-# Any listed operator may run any served operation, `copy start` and
-# `library protect` included: a key is the authority the coordinator account
+# Any listed operator may run any served operation, `copy start`,
+# `offload start` and `library protect` included: a key is the authority the coordinator account
 # was over SSH, scoped no finer. Remove a leaked key from the card.
 # Never served on the fabric: `copy download|export|receiver` are the SSH byte
 # paths between hosts, `library recover` replaces the library, and `jobs wait`

@@ -17,10 +17,13 @@ from pathlib import Path
 from fm_tools.data_refine import SCHEMA_VERSION, _canonical, _digest, _inventory
 
 
+#: Jobs the archive coordinator runs: they report progress and can pause.
+ARCHIVE_JOBS = frozenset({"archive_copy", "archive_offload"})
 # Each operation's parameters and their kinds. "path" values must be absolute;
 # a job never receives a relative path or a shell fragment.
 OPERATIONS = {
     "archive_copy": {"plan_id": "text", "configuration_digest": "text"},
+    "archive_offload": {"plan_id": "text", "configuration_digest": "text"},
     "derive": {name: "path" for name in (
         "source_root", "contract_dir", "report_dir", "state_root", "output_root",
         "consumer_project", "approval_file",
@@ -155,7 +158,7 @@ def status(args: argparse.Namespace) -> dict:
             if (path / "pid.json").exists():
                 record = {**record, "state": "interrupted", "reason_code": "interrupted_work"}
                 _atomic(path / "status.json", record)
-    if record["operation"] == "archive_copy" and (path / "progress.json").is_file():
+    if record["operation"] in ARCHIVE_JOBS and (path / "progress.json").is_file():
         record["progress"] = json.loads((path / "progress.json").read_text())
     return record
 
@@ -191,8 +194,8 @@ def cancel(args: argparse.Namespace) -> dict:
 def pause(args: argparse.Namespace) -> dict:
     path = _job(_root(args.job_root), args.request_id)
     record = status(args)
-    if record["operation"] != "archive_copy":
-        raise ValueError("pause is supported only for archive copy jobs")
+    if record["operation"] not in ARCHIVE_JOBS:
+        raise ValueError("pause is supported only for archive jobs")
     if record["state"] in {"queued", "running", "verifying"}:
         (path / "pause").touch(exist_ok=True)
     return status(args)
@@ -230,16 +233,18 @@ def _run(request: dict, cancel_file: Path) -> dict:
     kinds = OPERATIONS[request["operation"]]
     parameters = {name: Path(value) if kinds[name] in {"path", "optional_path"} and value is not None else value
                   for name, value in request["parameters"].items()}
-    if request["operation"] == "archive_copy":
+    if request["operation"] in ARCHIVE_JOBS:
+        from fm_tools.archive_offload import run_offload
         from fm_tools.archive_workflow import run_copy
 
         def checkpoint() -> None:
             if cancel_file.exists() or cancel_file.with_name("pause").exists():
                 raise InterruptedError("copy_stopped")
 
+        run = run_copy if request["operation"] == "archive_copy" else run_offload
         try:
-            return run_copy(**parameters, checkpoint=checkpoint,
-                            progress=lambda value: _atomic(cancel_file.with_name("progress.json"), value))
+            return run(**parameters, checkpoint=checkpoint,
+                       progress=lambda value: _atomic(cancel_file.with_name("progress.json"), value))
         except RuntimeError as exc:
             raise ValueError("archive_provider_failed") from exc
     if request["operation"] in {"preview", "split", "verify"}:
@@ -264,7 +269,7 @@ def _run(request: dict, cancel_file: Path) -> dict:
 
 
 # The directory each operation's result names, recorded as the job's artifact.
-_ARTIFACT = {"preview": "artifact", "split": "artifact", "verify": "artifact", "derive": "artifact", "transfer": "intake_dir", "scan": "scan_dir", "convert": "conversion_dir", "archive_copy": "artifact"}
+_ARTIFACT = {"preview": "artifact", "split": "artifact", "verify": "artifact", "derive": "artifact", "transfer": "intake_dir", "scan": "scan_dir", "convert": "conversion_dir", "archive_copy": "artifact", "archive_offload": "artifact"}
 
 
 def worker(path: Path) -> None:
@@ -318,7 +323,7 @@ def worker(path: Path) -> None:
             reason = code if re.fullmatch(r"[a-z][a-z0-9_]{1,80}", code) else "verification_failure"
             mark("cancelled" if cancelled else "paused" if paused else "failed",
                  "cancelled_work" if cancelled else "paused_work" if paused else reason,
-                 detail="archive_copy_refused" if request["operation"] == "archive_copy" else str(exc))
+                 detail=request["operation"] + "_refused" if request["operation"] in ARCHIVE_JOBS else str(exc))
             raise
 
 

@@ -63,6 +63,31 @@ def test_a_signed_write_runs_as_its_operator(calls):
     assert calls[0][2] == [False, True]
 
 
+@pytest.mark.parametrize("argv, write", [
+    (["offload", "plan", "--location", "tower-recordings", "--revision", "3", "--item", "a"], True),
+    (["offload", "start", "f" * 64, "--request-id", "offload-1"], True),
+    (["offload", "show", "f" * 64], False),
+])
+def test_a_signed_offload_request_is_classified_for_its_lane(calls, argv, write):
+    private, operator = keypair()
+    request = decode(body(argv, private, operator))
+    assert request.is_write is write
+    assert ask(body(argv, private, operator), [operator], calls)["ok"]
+
+
+@pytest.mark.parametrize("operators", [[], "unlisted"])
+def test_an_unsigned_or_unlisted_offload_is_refused(calls, operators):
+    private, operator = keypair()
+    argv = ["offload", "start", "f" * 64, "--request-id", "offload-1"]
+    if operators == "unlisted":
+        reply = ask(body(argv, *keypair("other")), [operator], calls)
+        assert reply["error_code"] == "operator_unknown"
+    else:
+        raw = json.dumps({"payload": base64.b64encode(json.dumps({"argv": argv}).encode()).decode()})
+        assert ask(raw.encode(), [operator], calls)["error_code"] == "signature_required"
+    assert calls == []
+
+
 def test_an_unsigned_read_is_refused(calls):
     raw = json.dumps({"payload": base64.b64encode(json.dumps({"argv": ["library", "list"]}).encode()).decode()})
     assert ask(raw.encode(), [], calls)["error_code"] == "signature_required"

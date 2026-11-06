@@ -73,8 +73,8 @@ for anyone and every request only for a listed operator:
 
 The agent serves `library` locations, list, search, show, files, preview,
 history, refresh, select, folder, item, collection and protect; `copy` show,
-plan, start and verify; and `jobs` list, show, status, pause, resume, retry and
-cancel. It does not serve `copy download`, `copy export`, `copy receiver`,
+plan, start and verify; `offload` plan, show and start; and `jobs` list,
+show, status, pause, resume, retry and cancel. It does not serve `copy download`, `copy export`, `copy receiver`,
 `library recover` or `jobs wait`. Bytes still move over SSH.
 
 Listing a key on the card is the authorisation, the way `authorized_keys` is
@@ -208,7 +208,8 @@ The local byte-copy and archive paths verify complete membership and SHA-256
 before acceptance. Existing destinations must match exactly. The uploader
 rechecks an accepted receipt on replay, including after loss of its local
 receipt cache. Restore uses the recorded provider versions and never replaces
-them with a newer object at the same key. No source deletion is implemented.
+them with a newer object at the same key. The coordinator removes a source
+only through an offload; see [Offload A Local Copy](#offload-a-local-copy).
 
 For the robot processing archive case, register the published raw session,
 governed dataset, and published review/consumer evidence with their owning
@@ -259,6 +260,68 @@ old recordings, receipts and timer configuration in the migration record.
 New source placement and immutable receipts are defined by fm-data's
 `fm_data_archive/ARCHIVE_LAYOUT.md`. Models, showcase objects and legacy
 unclassified content gain no new writer scope from being visible.
+
+## Offload A Local Copy
+
+An offload copies governed local items to Backblaze, verifies the copy and
+then removes the local bytes. The item stays in the library as cloud-only, and
+the existing copy, download and restore paths fetch it back.
+
+```sh
+fm archive offload plan --location <location> --item <item> --revision <revision> --json
+fm archive offload show <plan> --json
+fm archive offload start <plan> --request-id <request> --json
+```
+
+A location opts in on the machine card with the `offload` capability. Only a
+local `recordings` or `lerobot` location with a `root` may carry it. Its
+`min_local_days` (default 7) is the minimum age of an item's newest file
+before release. A location without the capability is refused. The capability
+is the offload's own deletion authority; the coordinator does not read the
+legacy uploader's deletion settings.
+`--destination` names the Backblaze location, and may be omitted when the card
+has exactly one.
+
+The plan freezes the batch at one library revision and reports `bytes_freed`
+and `bytes_uploaded`. It skips items with a reason instead of failing:
+
+| Reason | Meaning |
+| --- | --- |
+| `busy` | The source is still being written or is not finalized. |
+| `too_young` | The newest file is younger than `min_local_days`. |
+| `awaiting_legacy_upload` | A take the legacy uploader owns has no managed copy yet. |
+| `not_at_location` | The item has no present copy at this location. |
+
+Any other source refusal is reported as its own code.
+
+`start` queues an `archive_offload` job on the same detached queue as copies,
+and `jobs` shows its progress. For each item the job:
+
+1. rechecks the source against the frozen manifest;
+2. uploads it as a managed source, or reuses a managed copy that already
+   matches the manifest;
+3. stops here if cancelled or paused, keeping the source;
+4. releases the local copy through its owner, which re-reads every archived
+   object and compares its SHA-256 before anything moves.
+
+A take is released by fm-data's `release_local_episode`. It uses the service
+state directory that holds Review pins and fm-data delete intents, so a take
+under review is refused and an interrupted release
+recovers with fm-data's own delete intents. The coordinator account needs
+write access to that state directory. A take's glove CSVs stay on disk.
+
+A LeRobot dataset is rehashed and read back from the archive. It is refused if
+any entry's identity, mode, size or modification time changed during the
+readback. It then moves to a same-directory tombstone
+under an intent in `state_dir/offload-intents`. A crash before the release
+receipt in `state_dir/offload-releases` rolls the dataset back; a crash after
+it finishes the removal.
+
+A resumed job skips items it already released. A repeated request ID is the
+same job. A completed job refreshes the location so the library records the
+local copies as absent; after a stopped job they stay listed until the next
+refresh. Backblaze-side deletion is not
+implemented.
 
 ## Protect And Recover Organisation
 
