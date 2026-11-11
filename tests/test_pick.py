@@ -149,7 +149,9 @@ async def test_fm_repository_menu_opens_actions_and_preserves_target(
         assert f"fm install {repo.name}" in str(
             app.screen.query_one("#preview", Static).render()
         )
-        await pilot.pause()
+        # Review focuses Cancel on mount, which starts an animated scroll to it.
+        # A click aimed while that scroll runs can land on the widget beside it.
+        await pilot.wait_for_scheduled_animations()
         assert await pilot.click("#cancel"), "Cancel must receive the click"
         await pilot.pause()
         assert "Install repo" in str(
