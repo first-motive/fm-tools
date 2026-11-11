@@ -68,12 +68,5 @@ jobs:
       - name: Test
         run: uv run --extra dev pytest
 
-      - name: Loop flaky pick test (temporary, #97)
-        run: |
-          for i in $(seq 1 50); do
-            echo "run $i"
-            uv run --extra dev pytest -q -p no:cacheprovider "tests/test_pick.py::test_fm_repository_menu_opens_actions_and_preserves_target" || exit 1
-          done
-
       - name: Assert ROS-free import
         run: uv run python -c "import fm_tools.tui; import sys; assert 'rclpy' not in sys.modules"
