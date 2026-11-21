@@ -17,7 +17,7 @@ authors = [{ name = "First Motive", email = "nish@ubundi.co.za" }]
 # Pure-Python, no rclpy: any First Motive repo can pip install this from a git
 # tag without a ROS environment on the path.
 dependencies = [
-    "textual>=0.74",
+    "textual>=8.2.8",
     "rich",
     "pyte>=0.8.2",
 ]
